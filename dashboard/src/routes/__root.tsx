@@ -1,5 +1,7 @@
 import { createRootRoute, Link, Outlet } from '@tanstack/react-router'
 import { AGENTS } from '@/lib/agents'
+import { useOrchestratorEvents } from '@/hooks/useOrchestrator'
+import type { HealthTier } from '@/lib/types'
 
 export const rootRoute = createRootRoute({
   component: RootLayout,
@@ -16,7 +18,23 @@ function StatusDot({ status }: { status: string }) {
   return <span className={`${color} ${live ? 'status-live' : ''}`}>●</span>
 }
 
+function tierShortColor(tier: HealthTier): string {
+  switch (tier) {
+    case 'FULL_CAPABILITY': return 'text-term-green'
+    case 'DEGRADED_SENSORS': return 'text-term-yellow'
+    case 'LOCAL_ONLY': return 'text-term-cyan'
+    case 'SAFE_MODE': return 'text-term-red'
+    case 'HIBERNATION': return 'text-muted-foreground'
+  }
+}
+
+function tierShort(tier: HealthTier): string {
+  return tier.split('_')[0].toLowerCase()
+}
+
 function RootLayout() {
+  const { healthSnapshot, connected: orchConnected } = useOrchestratorEvents()
+
   return (
     <div className="min-h-screen flex flex-col">
       <header className="border-b px-4 py-2 flex items-center justify-between">
@@ -38,7 +56,22 @@ function RootLayout() {
 
       <div className="flex flex-1">
         <nav className="w-48 border-r p-2 flex flex-col gap-1">
+          {/* orchestrator section */}
           <div className="text-xs text-muted-foreground px-2 py-1 border-b mb-1">
+            ORCHESTRATOR
+          </div>
+          <Link
+            to="/mission"
+            className="flex items-center gap-2 px-2 py-1 text-xs no-underline text-foreground hover:bg-accent"
+            activeProps={{ className: 'bg-accent text-accent-foreground' }}
+          >
+            <span className="text-term-cyan">&gt;</span>
+            <span>mission</span>
+            <span className={`ml-auto ${orchConnected ? 'text-term-green status-live' : 'text-term-red'}`}>●</span>
+          </Link>
+
+          {/* agents section */}
+          <div className="text-xs text-muted-foreground px-2 py-1 border-b mb-1 mt-2">
             AGENTS
           </div>
           {AGENTS.map((agent) => (
@@ -56,9 +89,24 @@ function RootLayout() {
               </span>
             </Link>
           ))}
-          <div className="mt-auto border-t pt-2 px-2 text-xs text-muted-foreground">
-            <div>sys: nominal</div>
-            <div>uptime: 14d 7h</div>
+
+          {/* fleet health widget */}
+          <div className="mt-auto border-t pt-2 px-2 text-xs text-muted-foreground space-y-0.5">
+            <div>
+              orch:{' '}
+              <span className={orchConnected ? 'text-term-green' : 'text-term-red'}>
+                {orchConnected ? 'online' : 'offline'}
+              </span>
+            </div>
+            {healthSnapshot && Object.entries(healthSnapshot).map(([name, info]) => (
+              <div key={name}>
+                {name}:{' '}
+                <span className={tierShortColor(info.tier)}>
+                  {tierShort(info.tier)}
+                </span>
+              </div>
+            ))}
+            {!healthSnapshot && <div>fleet: --</div>}
           </div>
         </nav>
 
