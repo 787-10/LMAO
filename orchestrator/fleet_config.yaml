@@ -1,0 +1,21 @@
+fleet:
+  - name: scout-1
+    host: 192.168.1.42
+    port: 9090
+    capabilities: [navigate, manipulate, scan]
+  - name: scout-2
+    host: 192.168.1.43
+    port: 9090
+    capabilities: [navigate, scan]
+
+claude:
+  model: claude-sonnet-4-20250514
+  max_tokens: 4096
+
+health:
+  rate_window_s: 2.0
+  rate_degraded_threshold: 0.5   # <50% of expected rate = DEGRADED
+  rate_failed_threshold: 0.0     # ==0 = FAILED
+  heartbeat_timeout_s: 5.0
+  comms_blackout_s: 10.0
+  eval_interval_s: 1.0
