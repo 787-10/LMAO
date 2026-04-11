@@ -6,8 +6,10 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "anthropic>=0.94.0",
+    "fastapi>=0.135.3",
     "prompt-toolkit>=3.0.52",
     "python-dotenv>=1.2.2",
     "pyyaml>=6.0.3",
     "roslibpy>=2.0.0",
+    "uvicorn[standard]>=0.44.0",
 ]
