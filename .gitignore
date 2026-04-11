@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+.env
+.python-version
+.uv/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# ROS2 build artifacts
+install/
+log/
+.colcon/
+
+# Rosbags (huge — share via team drive)
+bags/*
+!bags/.gitkeep
+!bags/README.md
+
+# Inference model weights (huge — fetched at runtime)
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+weights/
+checkpoints/
+
+# Data fixtures that are too big
+data/canary_images/*.png
+data/canary_images/*.jpg
+!data/canary_images/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Streamlit
+.streamlit/
+
+# Local secrets
+*.key
+*.pem
+secrets/
