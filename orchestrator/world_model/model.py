@@ -51,7 +51,10 @@ class WorldModel:
             qz = orient.get("z", 0.0)
             qw = orient.get("w", 1.0)
             theta = 2.0 * math.atan2(qz, qw)
-            rs.position = (pos.get("x", 0.0), pos.get("y", 0.0), theta)
+            x = pos.get("x", 0.0)
+            y = pos.get("y", 0.0)
+            rs.position = (x, y, theta)
+            rs.record_position(x, y, theta)
             twist = msg.get("twist", {}).get("twist", {})
             lin = twist.get("linear", {})
             ang = twist.get("angular", {})
@@ -126,6 +129,19 @@ class WorldModel:
                 return "No robots registered."
             lines = [rs.summary() for rs in self._robots.values()]
             return "\n".join(lines)
+
+    async def get_position_trail(
+        self, robot_name: str, last_n: int | None = None
+    ) -> list[dict]:
+        """Return recent breadcrumbs as serialisable dicts."""
+        async with self._lock:
+            rs = self._robots.get(robot_name)
+            if rs is None:
+                return []
+            return [
+                {"t": b.t, "x": b.x, "y": b.y, "theta": b.theta}
+                for b in rs.get_trail(last_n)
+            ]
 
     # ------------------------------------------------------------------
     # Task / mission management
