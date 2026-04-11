@@ -261,6 +261,11 @@ function RobotPosePanel({ url }: { url: string }) {
     pose?: { pose?: { position?: { x: number; y: number } } }
   }>(url, '/odom', 'nav_msgs/msg/Odometry', 200)
 
+  const { data: cmdVelData } = useRosbridgeTopic<{
+    linear?: { x: number; y: number; z: number }
+    angular?: { x: number; y: number; z: number }
+  }>(url, '/cmd_vel', 'geometry_msgs/msg/Twist', 200)
+
   const pos = poseData?.pose?.pose?.position ?? { x: 0, y: 0, z: 0 }
   const ori = poseData?.pose?.pose?.orientation ?? { x: 0, y: 0, z: 0, w: 1 }
   const lin = odomData?.twist?.twist?.linear ?? { x: 0, y: 0 }
@@ -381,28 +386,17 @@ function RobotPosePanel({ url }: { url: string }) {
           <TelemetryRow label="lin.x" value={formatNum(lin.x)} color="text-term-green" />
           <TelemetryRow label="lin.y" value={formatNum(lin.y)} color="text-term-green" />
           <TelemetryRow label="ang.z" value={formatNum(ang.z)} color="text-term-yellow" />
+          <div className="border-t pt-1 mt-1" />
+          <div className="text-muted-foreground text-[10px] border-b pb-1 mb-1">CMD_VEL</div>
+          <TelemetryRow label="lin.x" value={formatNum(cmdVelData?.linear?.x)} color="text-term-green" />
+          <TelemetryRow label="lin.y" value={formatNum(cmdVelData?.linear?.y)} color="text-term-green" />
+          <TelemetryRow label="ang.z" value={formatNum(cmdVelData?.angular?.z)} color="text-term-yellow" />
         </div>
       </div>
     </div>
   )
 }
 
-function CmdVelPanel({ url }: { url: string }) {
-  const { data } = useRosbridgeTopic<{
-    linear?: { x: number; y: number; z: number }
-    angular?: { x: number; y: number; z: number }
-  }>(url, '/cmd_vel', 'geometry_msgs/msg/Twist', 200)
-  return (
-    <div className="border bg-card">
-      <PanelHeader title="CMD_VEL" />
-      <div className="p-2 text-xs space-y-1">
-        <TelemetryRow label="lin.x" value={formatNum(data?.linear?.x)} color="text-term-green" />
-        <TelemetryRow label="lin.y" value={formatNum(data?.linear?.y)} color="text-term-green" />
-        <TelemetryRow label="ang.z" value={formatNum(data?.angular?.z)} color="text-term-yellow" />
-      </div>
-    </div>
-  )
-}
 
 
 interface HeadState {
@@ -428,9 +422,9 @@ function HeadPositionPanel({ url }: { url: string }) {
 
   const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // sync slider to reported position only when close to target
+  // sync slider to reported position when not dragging
   useEffect(() => {
-    if (!dragging && Math.abs(pos - sliderVal) < 1.5) setSliderVal(pos)
+    if (!dragging) setSliderVal(pos)
   }, [pos, dragging])
 
   function startDrag(val: number) {
@@ -494,11 +488,33 @@ function HeadPositionPanel({ url }: { url: string }) {
 
 function SkillStatusPanel({ url }: { url: string }) {
   const { data } = useRosbridgeTopic<{ data?: string }>(url, '/brain/skill_status_update', 'std_msgs/msg/String', 1000)
+  const [text, setText] = useState('')
+
+  function send() {
+    if (!text.trim()) return
+    publishRosbridge(url, '/brain/skill_status_update', 'std_msgs/msg/String', { data: text.trim() })
+    setText('')
+  }
+
   return (
     <div className="border bg-card">
       <PanelHeader title="SKILL STATUS" />
-      <div className="p-2 text-xs truncate">
-        <span className="text-term-green">{data?.data ?? '--'}</span>
+      <div className="p-2 text-xs space-y-2">
+        <div className="truncate">
+          <span className="text-term-green">{data?.data ?? '--'}</span>
+        </div>
+        <div className="flex gap-1">
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && send()}
+            placeholder="status..."
+            className="flex-1 bg-secondary text-foreground text-xs px-2 py-1 border outline-none focus:border-primary min-w-0"
+          />
+          <button onClick={send} className="text-xs px-2 py-1 bg-primary text-primary-foreground hover:bg-accent shrink-0">
+            send
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -553,6 +569,7 @@ function ChatPanel({ url }: { url: string }) {
   const chatIn = useRosbridgeTopic<{ data?: string }>(url, '/brain/chat_in', 'std_msgs/msg/String', 0)
   const chatOut = useRosbridgeTopic<{ data?: string }>(url, '/brain/chat_out', 'std_msgs/msg/String', 0)
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [text, setText] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastInRef = useRef<string | null>(null)
   const lastOutRef = useRef<string | null>(null)
@@ -581,10 +598,18 @@ function ChatPanel({ url }: { url: string }) {
     }
   }, [messages])
 
+  function send() {
+    if (!text.trim()) return
+    publishRosbridge(url, '/brain/chat_in', 'std_msgs/msg/String', {
+      data: JSON.stringify({ text: text.trim(), sender: 'user', timestamp: Date.now() / 1000 }),
+    })
+    setText('')
+  }
+
   return (
-    <div className="border bg-card">
+    <div className="border bg-card flex flex-col">
       <PanelHeader title="CHAT" right={messages.length > 0 ? `${messages.length} msgs` : undefined} />
-      <div ref={scrollRef} className="max-h-64 overflow-y-auto text-xs font-mono">
+      <div ref={scrollRef} className="max-h-64 overflow-y-auto text-xs font-mono flex-1">
         {messages.length === 0 ? (
           <div className="px-2 py-4 text-muted-foreground text-center">no messages</div>
         ) : (
@@ -599,10 +624,29 @@ function ChatPanel({ url }: { url: string }) {
           ))
         )}
       </div>
+      <div className="border-t px-2 py-1.5 flex gap-2 items-center">
+        <span className="text-xs text-term-cyan shrink-0">{'>'}</span>
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && send()}
+          placeholder="send message..."
+          className="flex-1 bg-transparent text-foreground text-xs outline-none placeholder:text-muted-foreground/50 font-mono"
+        />
+        <button
+          onClick={send}
+          disabled={!text.trim()}
+          className="text-xs px-2 py-0.5 text-muted-foreground hover:text-foreground disabled:opacity-30"
+        >
+          send
+        </button>
+      </div>
     </div>
   )
 }
 
+// @ts-expect-error not yet wired
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function WaypointsPanel({ url }: { url: string }) {
   const { data } = useRosbridgeTopic<{ data?: string }>(url, '/brain/memory_positions', 'std_msgs/msg/String', 2000)
   let waypoints: Array<{ name: string }> = []
@@ -691,13 +735,13 @@ function DrivePanel({ url }: { url: string }) {
           {active ? 'RELEASE' : 'CONTROL'}
         </button>
 
-        <div className="grid grid-cols-3 gap-1 w-20">
+        <div className="grid grid-cols-3 gap-1.5 w-28">
           <div />
-          <div className={`text-center text-xs border px-1 py-0.5 transition-colors ${active ? k.w ? 'bg-term-green text-primary-foreground border-term-green' : 'text-muted-foreground border-muted-foreground/50' : 'text-muted-foreground/30 border-muted-foreground/20'}`}>W</div>
+          <div className={`text-center text-sm font-bold border px-2 py-1.5 rounded-sm transition-colors ${active ? k.w ? 'bg-term-green text-primary-foreground border-term-green shadow-[0_0_8px_rgba(95,175,95,0.5)]' : 'text-foreground border-muted-foreground/60' : 'text-muted-foreground/30 border-muted-foreground/20'}`}>W</div>
           <div />
-          <div className={`text-center text-xs border px-1 py-0.5 transition-colors ${active ? k.a ? 'bg-term-green text-primary-foreground border-term-green' : 'text-muted-foreground border-muted-foreground/50' : 'text-muted-foreground/30 border-muted-foreground/20'}`}>A</div>
-          <div className={`text-center text-xs border px-1 py-0.5 transition-colors ${active ? k.s ? 'bg-term-green text-primary-foreground border-term-green' : 'text-muted-foreground border-muted-foreground/50' : 'text-muted-foreground/30 border-muted-foreground/20'}`}>S</div>
-          <div className={`text-center text-xs border px-1 py-0.5 transition-colors ${active ? k.d ? 'bg-term-green text-primary-foreground border-term-green' : 'text-muted-foreground border-muted-foreground/50' : 'text-muted-foreground/30 border-muted-foreground/20'}`}>D</div>
+          <div className={`text-center text-sm font-bold border px-2 py-1.5 rounded-sm transition-colors ${active ? k.a ? 'bg-term-green text-primary-foreground border-term-green shadow-[0_0_8px_rgba(95,175,95,0.5)]' : 'text-foreground border-muted-foreground/60' : 'text-muted-foreground/30 border-muted-foreground/20'}`}>A</div>
+          <div className={`text-center text-sm font-bold border px-2 py-1.5 rounded-sm transition-colors ${active ? k.s ? 'bg-term-green text-primary-foreground border-term-green shadow-[0_0_8px_rgba(95,175,95,0.5)]' : 'text-foreground border-muted-foreground/60' : 'text-muted-foreground/30 border-muted-foreground/20'}`}>S</div>
+          <div className={`text-center text-sm font-bold border px-2 py-1.5 rounded-sm transition-colors ${active ? k.d ? 'bg-term-green text-primary-foreground border-term-green shadow-[0_0_8px_rgba(95,175,95,0.5)]' : 'text-foreground border-muted-foreground/60' : 'text-muted-foreground/30 border-muted-foreground/20'}`}>D</div>
         </div>
         <div className="text-[10px] text-muted-foreground">
           lin:{(lin * LIN_SPEED).toFixed(1)} ang:{(ang * ANG_SPEED).toFixed(1)}
@@ -707,112 +751,187 @@ function DrivePanel({ url }: { url: string }) {
   )
 }
 
-function ChatInputPanel({ url }: { url: string }) {
-  const [text, setText] = useState('')
 
-  function send() {
-    if (!text.trim()) return
-    publishRosbridge(url, '/brain/chat_out', 'std_msgs/msg/String', { data: text.trim() })
-    setText('')
-  }
+const ARM_JOINTS = [
+  { name: 'J1 base', min: -1.5708, max: 1.5708 },
+  { name: 'J2 shldr', min: -1.5708, max: 1.22 },
+  { name: 'J3 elbow', min: -1.5708, max: 1.7453 },
+  { name: 'J4 wrist', min: -1.9199, max: 1.7453 },
+  { name: 'J5 roll', min: -1.5708, max: 1.5708 },
+  { name: 'J6 grip', min: -0.8727, max: 0.3491 },
+]
+const ARM_STEP = 0.03
+
+// @ts-expect-error not yet wired into layout
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function ArmControlPanel({ url }: { url: string }) {
+  const { data: armState } = useRosbridgeTopic<{
+    position?: number[]
+  }>(url, '/mars/arm/state', 'sensor_msgs/msg/JointState', 100)
+
+  const [active, setActive] = useState(false)
+  const [selectedJoint, setSelectedJoint] = useState(0)
+  const [joints, setJoints] = useState<number[]>([0, 0, 0, 0, 0, 0])
+  const [keysDown, setKeysDown] = useState({ up: false, down: false })
+  const jointsRef = useRef(joints)
+  const keysRef = useRef(keysDown)
+  const selectedRef = useRef(selectedJoint)
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const syncedRef = useRef(false)
+  jointsRef.current = joints
+  keysRef.current = keysDown
+  selectedRef.current = selectedJoint
+
+  // sync from arm state when not active
+  useEffect(() => {
+    if (!active && armState?.position && armState.position.length >= 6) {
+      setJoints(armState.position.slice(0, 6))
+      syncedRef.current = true
+    }
+  }, [armState?.position, active])
+
+  // sync once when activating
+  useEffect(() => {
+    if (active && armState?.position && armState.position.length >= 6 && !syncedRef.current) {
+      setJoints(armState.position.slice(0, 6))
+      syncedRef.current = true
+    }
+  }, [active, armState?.position])
+
+  useEffect(() => {
+    if (!active) {
+      syncedRef.current = false
+      return
+    }
+
+    function onKey(e: KeyboardEvent, down: boolean) {
+      const k = e.key
+      if (k >= '1' && k <= '6') {
+        e.preventDefault()
+        if (down) setSelectedJoint(parseInt(k) - 1)
+        return
+      }
+      if (k === 'ArrowUp' || k === 'ArrowDown') {
+        e.preventDefault()
+        setKeysDown(prev => ({
+          ...prev,
+          [k === 'ArrowUp' ? 'up' : 'down']: down,
+        }))
+      }
+    }
+    const onDown = (e: KeyboardEvent) => onKey(e, true)
+    const onUp = (e: KeyboardEvent) => onKey(e, false)
+    window.addEventListener('keydown', onDown)
+    window.addEventListener('keyup', onUp)
+
+    intervalRef.current = setInterval(() => {
+      const k = keysRef.current
+      const dir = (k.up ? 1 : 0) - (k.down ? 1 : 0)
+      if (dir !== 0) {
+        const j = selectedRef.current
+        const cfg = ARM_JOINTS[j]
+        const newJoints = [...jointsRef.current]
+        newJoints[j] = Math.max(cfg.min, Math.min(cfg.max, newJoints[j] + dir * ARM_STEP))
+        setJoints(newJoints)
+        jointsRef.current = newJoints
+      }
+      publishRosbridge(url, '/mars/arm/commands', 'std_msgs/msg/Float64MultiArray', {
+        layout: { dim: [], data_offset: 0 },
+        data: jointsRef.current,
+      })
+    }, 50)
+
+    return () => {
+      window.removeEventListener('keydown', onDown)
+      window.removeEventListener('keyup', onUp)
+      if (intervalRef.current) clearInterval(intervalRef.current)
+      setKeysDown({ up: false, down: false })
+    }
+  }, [active, url])
+
+  const pos = armState?.position
 
   return (
-    <div className="border bg-card">
-      <PanelHeader title="SEND CHAT" />
-      <div className="p-2 flex gap-1">
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && send()}
-          placeholder="message..."
-          className="flex-1 bg-secondary text-foreground text-xs px-2 py-1 border outline-none focus:border-primary"
-        />
-        <button onClick={send} className="text-xs px-2 py-1 bg-primary text-primary-foreground hover:bg-accent">
-          send
-        </button>
+    <div className="border bg-card col-span-2">
+      <PanelHeader title="ARM CONTROL" right={active ? 'ACTIVE' : undefined} />
+      <div className="p-3 flex gap-4">
+        {/* joint list */}
+        <div className="flex-1 text-xs font-mono space-y-0.5">
+          {ARM_JOINTS.map((j, i) => {
+            const cur = pos?.[i] ?? 0
+            const target = joints[i]
+            const pct = ((target - j.min) / (j.max - j.min)) * 100
+            const isSelected = active && selectedJoint === i
+            return (
+              <div
+                key={i}
+                onClick={() => active && setSelectedJoint(i)}
+                className={`flex items-center gap-2 px-1 py-0.5 cursor-pointer rounded-sm transition-colors ${isSelected ? 'bg-accent' : 'hover:bg-accent/50'}`}
+              >
+                <span className={`w-4 shrink-0 ${isSelected ? 'text-term-cyan' : 'text-muted-foreground'}`}>{i + 1}</span>
+                <span className={`w-14 shrink-0 ${isSelected ? 'text-foreground' : 'text-muted-foreground'}`}>{j.name}</span>
+                <div className="flex-1 h-2 bg-secondary rounded-sm relative overflow-hidden">
+                  <div
+                    className={`absolute top-0 bottom-0 w-1 rounded-sm ${isSelected ? 'bg-term-cyan' : 'bg-muted-foreground/50'}`}
+                    style={{ left: `calc(${pct}% - 2px)` }}
+                  />
+                </div>
+                <span className={`w-12 text-right shrink-0 ${isSelected ? 'text-term-cyan' : 'text-muted-foreground'}`}>
+                  {formatNum(cur, 2)}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+
+        {/* controls */}
+        <div className="flex flex-col items-center gap-2 w-20">
+          <button
+            onClick={() => setActive(a => !a)}
+            className={`text-xs px-3 py-1 font-bold ${active
+              ? 'bg-term-red text-primary-foreground'
+              : 'bg-primary text-primary-foreground hover:bg-accent'
+              }`}
+          >
+            {active ? 'RELEASE' : 'CONTROL'}
+          </button>
+
+          <div className="grid grid-cols-1 gap-1 w-8">
+            <div className={`text-center text-xs border px-1 py-0.5 transition-colors ${active ? keysDown.up ? 'bg-term-cyan text-primary-foreground border-term-cyan' : 'text-muted-foreground border-muted-foreground/50' : 'text-muted-foreground/30 border-muted-foreground/20'}`}>{'\u2191'}</div>
+            <div className={`text-center text-xs border px-1 py-0.5 transition-colors ${active ? keysDown.down ? 'bg-term-cyan text-primary-foreground border-term-cyan' : 'text-muted-foreground border-muted-foreground/50' : 'text-muted-foreground/30 border-muted-foreground/20'}`}>{'\u2193'}</div>
+          </div>
+
+          <div className="text-[10px] text-muted-foreground text-center">
+            <div>1-6: joint</div>
+            <div>{'\u2191\u2193'}: move</div>
+          </div>
+
+          <div className="grid grid-cols-6 gap-0.5 w-full">
+            {ARM_JOINTS.map((_, i) => (
+              <div
+                key={i}
+                onClick={() => active && setSelectedJoint(i)}
+                className={`text-center text-[9px] border px-0 py-0.5 cursor-pointer transition-colors ${active && selectedJoint === i
+                  ? 'bg-term-cyan text-primary-foreground border-term-cyan'
+                  : active
+                    ? 'text-muted-foreground border-muted-foreground/50'
+                    : 'text-muted-foreground/30 border-muted-foreground/20'
+                  }`}
+              >
+                {i + 1}
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   )
 }
 
-function SkillUpdatePanel({ url }: { url: string }) {
-  const [text, setText] = useState('')
 
-  function send() {
-    if (!text.trim()) return
-    publishRosbridge(url, '/brain/skill_status_update', 'std_msgs/msg/String', { data: text.trim() })
-    setText('')
-  }
 
-  return (
-    <div className="border bg-card">
-      <PanelHeader title="SKILL UPDATE" />
-      <div className="p-2 flex gap-1">
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && send()}
-          placeholder="status..."
-          className="flex-1 bg-secondary text-foreground text-xs px-2 py-1 border outline-none focus:border-primary"
-        />
-        <button onClick={send} className="text-xs px-2 py-1 bg-primary text-primary-foreground hover:bg-accent">
-          send
-        </button>
-      </div>
-    </div>
-  )
-}
-
-function TTSControlPanel({ url }: { url: string }) {
-  return (
-    <div className="border bg-card">
-      <PanelHeader title="TTS CONTROL" />
-      <div className="p-2 flex gap-1">
-        <button
-          onClick={() => publishRosbridge(url, '/tts/is_playing', 'std_msgs/msg/Bool', { data: true })}
-          className="text-xs px-2 py-1 bg-secondary text-secondary-foreground hover:bg-accent flex-1"
-        >
-          play
-        </button>
-        <button
-          onClick={() => publishRosbridge(url, '/tts/is_playing', 'std_msgs/msg/Bool', { data: false })}
-          className="text-xs px-2 py-1 bg-secondary text-secondary-foreground hover:bg-accent flex-1"
-        >
-          stop
-        </button>
-      </div>
-    </div>
-  )
-}
-
-function InputConfigPanel({ url }: { url: string }) {
-  const [text, setText] = useState('')
-
-  function send() {
-    if (!text.trim()) return
-    publishRosbridge(url, '/input_manager/active_inputs', 'std_msgs/msg/String', { data: text.trim() })
-    setText('')
-  }
-
-  return (
-    <div className="border bg-card">
-      <PanelHeader title="INPUT CONFIG" />
-      <div className="p-2 flex gap-1">
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && send()}
-          placeholder="config json..."
-          className="flex-1 bg-secondary text-foreground text-xs px-2 py-1 border outline-none focus:border-primary"
-        />
-        <button onClick={send} className="text-xs px-2 py-1 bg-primary text-primary-foreground hover:bg-accent">
-          send
-        </button>
-      </div>
-    </div>
-  )
-}
-
+// @ts-expect-error not yet wired
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function WaypointSendPanel({ url }: { url: string }) {
   const [text, setText] = useState('')
 
@@ -950,10 +1069,10 @@ function LidarPanel({ url }: { url: string }) {
   }, [data])
 
   return (
-    <div className="border bg-card w-[240px] h-[240px] shrink-0 flex flex-col">
+    <div className="border bg-card w-[310px] shrink-0">
       <PanelHeader title="LIDAR" right="/scan" />
-      <div className="p-1 flex-1 min-h-0">
-        <canvas ref={canvasRef} width={298} height={298} className="w-full h-full" />
+      <div className="p-1">
+        <canvas ref={canvasRef} width={298} height={298} className="w-full" style={{ aspectRatio: '1' }} />
       </div>
     </div>
   )
@@ -974,114 +1093,278 @@ function EventRow({ event }: { event: AgentEvent }) {
   )
 }
 
-// -- location panels (static data) --
+// -- live location track from odom --
 
-function LocationTrack({ agent }: { agent: Agent }) {
-  const { track } = agent
-  if (track.length < 2) return null
-  const points = track.map((p) => `${p.x},${p.y}`).join(' ')
+const TRACK_MAX = 500
+const TRACK_MIN_DIST = 0.05 // meters between recorded points
+
+function LiveLocationTrack({ url }: { url: string }) {
+  const trackRef = useRef<{ x: number; y: number }[]>([])
+  const [track, setTrack] = useState<{ x: number; y: number }[]>([])
+  const { data } = useRosbridgeTopic<{
+    pose?: { pose?: { position?: { x: number; y: number } } }
+  }>(url, '/odom', 'nav_msgs/msg/Odometry', 300)
+
+  useEffect(() => {
+    if (!data?.pose?.pose?.position) return
+    const { x, y } = data.pose.pose.position
+    const pts = trackRef.current
+    if (pts.length > 0) {
+      const last = pts[pts.length - 1]
+      const dist = Math.sqrt((x - last.x) ** 2 + (y - last.y) ** 2)
+      if (dist < TRACK_MIN_DIST) return
+    }
+    pts.push({ x, y })
+    if (pts.length > TRACK_MAX) pts.shift()
+    setTrack([...pts])
+  }, [data])
+
+  if (track.length < 2) {
+    return (
+      <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground">
+        waiting for odom...
+      </div>
+    )
+  }
+
+  // compute bounds with padding
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+  for (const p of track) {
+    if (p.x < minX) minX = p.x
+    if (p.x > maxX) maxX = p.x
+    if (p.y < minY) minY = p.y
+    if (p.y > maxY) maxY = p.y
+  }
+  const rangeX = maxX - minX || 1
+  const rangeY = maxY - minY || 1
+  const range = Math.max(rangeX, rangeY) * 1.3
+  const cx = (minX + maxX) / 2
+  const cy = (minY + maxY) / 2
+
+  // map world to SVG [5..95]
+  function toSvg(wx: number, wy: number): { sx: number; sy: number } {
+    return {
+      sx: 50 + ((wx - cx) / range) * 90,
+      sy: 50 - ((wy - cy) / range) * 90, // flip y
+    }
+  }
+
   const last = track[track.length - 1]
+  const lastSvg = toSvg(last.x, last.y)
+
+  // grid spacing in meters (snap to nice values)
+  const gridStep = range > 8 ? 2 : range > 3 ? 1 : range > 1 ? 0.5 : 0.2
+  const gridStart = { x: Math.floor(minX / gridStep) * gridStep, y: Math.floor(minY / gridStep) * gridStep }
+
   return (
     <svg viewBox="0 0 100 100" className="w-full h-full" preserveAspectRatio="xMidYMid meet">
-      {Array.from({ length: 11 }, (_, i) => (
-        <line key={`gx-${i}`} x1={i * 10} y1={0} x2={i * 10} y2={100} stroke="currentColor" className="text-border" strokeWidth={0.3} />
-      ))}
-      {Array.from({ length: 11 }, (_, i) => (
-        <line key={`gy-${i}`} x1={0} y1={i * 10} x2={100} y2={i * 10} stroke="currentColor" className="text-border" strokeWidth={0.3} />
-      ))}
-      {track.slice(0, -1).map((p, i) => {
-        const next = track[i + 1]
-        return <line key={i} x1={p.x} y1={p.y} x2={next.x} y2={next.y} stroke="#5f87af" strokeWidth={1} opacity={0.15 + (i / track.length) * 0.6} />
+      {/* dynamic grid */}
+      {Array.from({ length: Math.ceil(range / gridStep) + 2 }, (_, i) => {
+        const wx = gridStart.x + i * gridStep
+        const { sx } = toSvg(wx, 0)
+        if (sx < 2 || sx > 98) return null
+        return <line key={`gx-${i}`} x1={sx} y1={0} x2={sx} y2={100} stroke="currentColor" className="text-border" strokeWidth={0.2} />
       })}
-      {track.map((p, i) => (
-        <circle key={i} cx={p.x} cy={p.y} r={i === track.length - 1 ? 2.5 : 1} fill={i === track.length - 1 ? '#5f87af' : '#6c6c6c'} />
-      ))}
-      <text x={last.x} y={last.y - 5} fontSize={5} fill="#5f87af" textAnchor="middle" fontFamily="monospace">({last.x},{last.y})</text>
-      <polyline points={points} fill="none" stroke="#5f87af" strokeWidth={0.5} strokeDasharray="2 1" opacity={0.3} />
+      {Array.from({ length: Math.ceil(range / gridStep) + 2 }, (_, i) => {
+        const wy = gridStart.y + i * gridStep
+        const { sy } = toSvg(0, wy)
+        if (sy < 2 || sy > 98) return null
+        return <line key={`gy-${i}`} x1={0} y1={sy} x2={100} y2={sy} stroke="currentColor" className="text-border" strokeWidth={0.2} />
+      })}
+
+      {/* origin axes */}
+      {(() => {
+        const o = toSvg(0, 0)
+        return (
+          <>
+            {o.sx > 2 && o.sx < 98 && <line x1={o.sx} y1={0} x2={o.sx} y2={100} stroke="#d75f5f" strokeWidth={0.3} opacity={0.3} />}
+            {o.sy > 2 && o.sy < 98 && <line x1={0} y1={o.sy} x2={100} y2={o.sy} stroke="#5faf5f" strokeWidth={0.3} opacity={0.3} />}
+          </>
+        )
+      })()}
+
+      {/* trail */}
+      {track.slice(0, -1).map((p, i) => {
+        const a = toSvg(p.x, p.y)
+        const b = toSvg(track[i + 1].x, track[i + 1].y)
+        const opacity = 0.1 + (i / track.length) * 0.7
+        return <line key={i} x1={a.sx} y1={a.sy} x2={b.sx} y2={b.sy} stroke="#5f87af" strokeWidth={0.8} opacity={opacity} />
+      })}
+
+      {/* current position */}
+      <circle cx={lastSvg.sx} cy={lastSvg.sy} r={2} fill="#5f87af" />
+
+      {/* start position */}
+      {(() => {
+        const s = toSvg(track[0].x, track[0].y)
+        return <circle cx={s.sx} cy={s.sy} r={1.5} fill="none" stroke="#6c6c6c" strokeWidth={0.5} />
+      })()}
+
+      {/* position label */}
+      <text x={lastSvg.sx} y={lastSvg.sy - 4} fontSize={4} fill="#5f87af" textAnchor="middle" fontFamily="monospace">
+        ({last.x.toFixed(2)}, {last.y.toFixed(2)})
+      </text>
+
+      {/* scale */}
+      <text x={3} y={97} fontSize={3.5} fill="#6c6c6c" fontFamily="monospace">{range.toFixed(1)}m</text>
     </svg>
   )
 }
 
-const OCC_SIZE = 64
-const OCC_RANGE = 6 // meters per half-side
+const OCC_SIZE = 298
+const OCC_RANGE = 8 // meters per half-side (16m total)
+const OCC_RES = (OCC_RANGE * 2) / OCC_SIZE // meters per cell
+const LOG_OCC = 0.4
+const LOG_FREE = -0.12
+const LOG_CLAMP = 6
+
+function worldToGrid(wx: number, wy: number, originX: number, originY: number): [number, number] {
+  const gx = Math.floor((wx - originX) / OCC_RES + OCC_SIZE / 2)
+  const gy = Math.floor((wy - originY) / OCC_RES + OCC_SIZE / 2)
+  return [gx, gy]
+}
+
+function inGrid(gx: number, gy: number): boolean {
+  return gx >= 0 && gx < OCC_SIZE && gy >= 0 && gy < OCC_SIZE
+}
 
 function LidarOccupancy({ url }: { url: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const gridRef = useRef<Float32Array>(new Float32Array(OCC_SIZE * OCC_SIZE))
-  const maxRef = useRef(1)
+  const originRef = useRef<{ x: number; y: number } | null>(null)
+  const poseRef = useRef({ x: 0, y: 0, yaw: 0 })
   const frameRef = useRef(0)
-  const { data } = useRosbridgeTopic<LaserScanMsg>(url, '/scan', 'sensor_msgs/msg/LaserScan', 500)
+  const [paused, setPaused] = useState(false)
+  const pausedRef = useRef(false)
+  pausedRef.current = paused
 
+  const { data: scanData } = useRosbridgeTopic<LaserScanMsg>(url, '/scan', 'sensor_msgs/msg/LaserScan', 500)
+  const { data: odomData } = useRosbridgeTopic<{
+    pose?: { pose?: { position?: { x: number; y: number }; orientation?: { x: number; y: number; z: number; w: number } } }
+  }>(url, '/odom', 'nav_msgs/msg/Odometry', 200)
+
+  // update pose from odom
   useEffect(() => {
-    if (!data?.ranges) return
-    const grid = gridRef.current
-    const { angle_min, angle_increment, ranges, range_min } = data
-    const scale = OCC_SIZE / (OCC_RANGE * 2)
-    const cx = OCC_SIZE / 2
+    if (!odomData?.pose?.pose) return
+    const pos = odomData.pose.pose.position
+    const ori = odomData.pose.pose.orientation
+    if (!pos || !ori) return
+    const yaw = Math.atan2(2 * (ori.w * ori.z + ori.x * ori.y), 1 - 2 * (ori.y * ori.y + ori.z * ori.z))
+    poseRef.current = { x: pos.x, y: pos.y, yaw }
+    if (!originRef.current) {
+      originRef.current = { x: pos.x, y: pos.y }
+    }
+  }, [odomData])
 
-    // decay existing values slightly
-    for (let i = 0; i < grid.length; i++) grid[i] *= 0.995
+  // process scan in world frame
+  useEffect(() => {
+    if (!scanData?.ranges || pausedRef.current) return
+    const origin = originRef.current
+    if (!origin) return // need pose first
+
+    const grid = gridRef.current
+    const { x: rx, y: ry, yaw } = poseRef.current
+    const { angle_min, angle_increment, ranges, range_min } = scanData
 
     for (let i = 0; i < ranges.length; i++) {
       const r = ranges[i]
-      if (r == null || !isFinite(r) || r < range_min || r > OCC_RANGE * 2) continue
-      const angle = angle_min + i * angle_increment
-      const gx = Math.floor(cx - Math.sin(angle) * r * scale)
-      const gy = Math.floor(cx - Math.cos(angle) * r * scale)
-      if (gx >= 0 && gx < OCC_SIZE && gy >= 0 && gy < OCC_SIZE) {
-        grid[gy * OCC_SIZE + gx] += 1
+      if (r == null || !isFinite(r) || r < range_min) continue
+      const angle = yaw + angle_min + i * angle_increment
+      const clampedR = Math.min(r, OCC_RANGE * 1.5)
+
+      // world-frame hit point
+      const hitWx = rx + Math.cos(angle) * clampedR
+      const hitWy = ry + Math.sin(angle) * clampedR
+      const [hgx, hgy] = worldToGrid(hitWx, hitWy, origin.x, origin.y)
+
+      // raytrace from robot to hit in grid coords
+      const [rgx, rgy] = worldToGrid(rx, ry, origin.x, origin.y)
+      const ddx = hgx - rgx
+      const ddy = hgy - rgy
+      const steps = Math.max(Math.abs(ddx), Math.abs(ddy))
+      if (steps === 0) continue
+
+      for (let s = 0; s < steps; s++) {
+        const gx = Math.floor(rgx + (ddx * s) / steps)
+        const gy = Math.floor(rgy + (ddy * s) / steps)
+        if (!inGrid(gx, gy)) continue
+        const idx = gy * OCC_SIZE + gx
+        grid[idx] = Math.max(-LOG_CLAMP, grid[idx] + LOG_FREE)
+      }
+
+      // mark hit as occupied
+      if (r <= OCC_RANGE * 1.5 && inGrid(hgx, hgy)) {
+        const idx = hgy * OCC_SIZE + hgx
+        grid[idx] = Math.min(LOG_CLAMP, grid[idx] + LOG_OCC)
       }
     }
 
-    let max = 0
-    for (let i = 0; i < grid.length; i++) if (grid[i] > max) max = grid[i]
-    if (max > 0) maxRef.current = max
     frameRef.current++
 
-    // render
+    // render -- 1:1 pixel mapping (OCC_SIZE === canvas size)
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    const S = 256
-    const cell = S / OCC_SIZE
+    const S = OCC_SIZE
+    const imgData = ctx.createImageData(S, S)
 
-    ctx.fillStyle = '#0a0a0a'
-    ctx.fillRect(0, 0, S, S)
-
-    for (let y = 0; y < OCC_SIZE; y++) {
-      for (let x = 0; x < OCC_SIZE; x++) {
-        const n = grid[y * OCC_SIZE + x] / maxRef.current
-        if (n < 0.01) continue
-        let r: number, g: number, b: number
-        if (n < 0.15) { const t = n / 0.15; r = 0; g = t * 120; b = 95 + t * 80 }
-        else if (n < 0.35) { const t = (n - 0.15) / 0.2; r = 0; g = 120 + t * 55; b = 175 - t * 80 }
-        else if (n < 0.6) { const t = (n - 0.35) / 0.25; r = t * 175; g = 175; b = 95 - t * 95 }
-        else if (n < 0.85) { const t = (n - 0.6) / 0.25; r = 175 + t * 40; g = 175 - t * 80; b = 0 }
-        else { const t = (n - 0.85) / 0.15; r = 215 + t * 40; g = 95 - t * 95; b = 0 }
-        ctx.fillStyle = `rgb(${r},${g},${b})`
-        ctx.fillRect(x * cell, y * cell, cell, cell)
+    for (let i = 0; i < grid.length; i++) {
+      const v = grid[i]
+      let cr: number, cg: number, cb: number
+      if (v > 0.3) {
+        const t = Math.min(1, v / LOG_CLAMP)
+        cr = Math.floor(80 + t * 175)
+        cg = cr; cb = cr
+      } else if (v < -0.2) {
+        cr = 18; cg = 18; cb = 20
+      } else {
+        cr = 10; cg = 10; cb = 12
       }
+      imgData.data[i * 4] = cr
+      imgData.data[i * 4 + 1] = cg
+      imgData.data[i * 4 + 2] = cb
+      imgData.data[i * 4 + 3] = 255
     }
+    ctx.putImageData(imgData, 0, 0)
 
-    ctx.strokeStyle = '#1c1c1c'
-    ctx.lineWidth = 0.5
-    for (let i = 0; i <= OCC_SIZE; i += 8) {
-      const p = i * cell
-      ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, S); ctx.stroke()
-      ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(S, p); ctx.stroke()
-    }
+    // robot position on map
+    const [botGx, botGy] = worldToGrid(rx, ry, origin.x, origin.y)
 
+    // heading indicator
+    ctx.strokeStyle = 'rgba(95,175,95,0.6)'
+    ctx.lineWidth = 1.5
+    ctx.beginPath()
+    ctx.moveTo(botGx, botGy)
+    ctx.lineTo(botGx + Math.cos(-yaw + Math.PI / 2) * 14, botGy - Math.sin(-yaw + Math.PI / 2) * 14)
+    ctx.stroke()
+
+    // robot triangle
     ctx.fillStyle = '#5f87af'
-    ctx.fillRect(S / 2 - 2, S / 2 - 2, 4, 4)
-  }, [data])
+    ctx.save()
+    ctx.translate(botGx, botGy)
+    ctx.rotate(-yaw + Math.PI / 2)
+    ctx.beginPath()
+    ctx.moveTo(0, -5)
+    ctx.lineTo(-3, 4)
+    ctx.lineTo(3, 4)
+    ctx.closePath()
+    ctx.fill()
+    ctx.restore()
+  }, [scanData])
 
   return (
-    <div className="border bg-card flex flex-col">
-      <PanelHeader title="LIDAR OCCUPANCY" right={`${frameRef.current} scans`} />
-      <div className="p-2 flex justify-center">
-        <canvas ref={canvasRef} width={256} height={256} style={{ width: 256, height: 256 }} />
+    <div className="border bg-card w-[310px] shrink-0">
+      <PanelHeader title="LIDAR MAP" right={`${frameRef.current}${paused ? ' paused' : ''}`} />
+      <div className="p-1 relative group">
+        <canvas ref={canvasRef} width={OCC_SIZE} height={OCC_SIZE} className="w-full" style={{ aspectRatio: '1', imageRendering: 'pixelated' }} />
+        <button
+          onClick={() => setPaused((p) => !p)}
+          className="absolute bottom-2 right-2 text-[10px] px-1.5 py-0.5 bg-black/60 text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+        >
+          {paused ? 'play' : 'pause'}
+        </button>
       </div>
     </div>
   )
@@ -1153,53 +1436,35 @@ function AgentPage() {
         </div>
 
         {url && <LidarPanel url={url} />}
+        {url && <LidarOccupancy url={url} />}
       </div>
 
       {/* telemetry grid */}
       {url && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
           <RobotPosePanel url={url} />
-          <CmdVelPanel url={url} />
           <DrivePanel url={url} />
           <SkillStatusPanel url={url} />
           <TTSPanel url={url} />
-          <WaypointsPanel url={url} />
+          {/* <WaypointsPanel url={url} /> */}
         </div>
       )}
 
-      {/* controls */}
-      {url && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-          <ChatInputPanel url={url} />
-          <SkillUpdatePanel url={url} />
-          <TTSControlPanel url={url} />
-          <InputConfigPanel url={url} />
-          <WaypointSendPanel url={url} />
-        </div>
-      )}
+      {/* arm control */}
+      {/* {url && <ArmControlPanel url={url} />} */}
 
       {/* chat */}
       {url && <ChatPanel url={url} />}
 
-      {/* location track + lidar occupancy */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <div className="border bg-card flex flex-col">
-          <PanelHeader title="LOCATION TRACK" right={`${agent.track.length} pts`} />
+      {/* location track */}
+      {url && (
+        <div className="border bg-card flex flex-col" style={{ maxWidth: 300 }}>
+          <PanelHeader title="LOCATION TRACK" right="/odom" />
           <div className="p-2 aspect-square max-h-64">
-            <LocationTrack agent={agent} />
+            <LiveLocationTrack url={url} />
           </div>
         </div>
-        {url ? (
-          <LidarOccupancy url={url} />
-        ) : (
-          <div className="border bg-card flex flex-col">
-            <PanelHeader title="LIDAR OCCUPANCY" />
-            <div className="p-2 aspect-square max-h-64 flex items-center justify-center text-xs text-muted-foreground">
-              no rosbridge
-            </div>
-          </div>
-        )}
-      </div>
+      )}
 
       {/* event log */}
       <div className="border bg-card flex flex-col">

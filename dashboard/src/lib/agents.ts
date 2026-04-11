@@ -23,9 +23,10 @@ export interface Agent {
   rosbridgeUrl?: string
   events: AgentEvent[]
   track: Point[]
-  heatmap: number[][]
 }
 
+// @ts-expect-error kept for future use
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function generateHeatmap(hotspots: Point[], intensity: number): number[][] {
   const grid: number[][] = Array.from({ length: 16 }, () =>
     Array.from({ length: 16 }, () => 0),
@@ -59,10 +60,6 @@ export const AGENTS: Agent[] = [
       { x: 70, y: 40 }, { x: 75, y: 50 }, { x: 80, y: 55 },
       { x: 85, y: 50 }, { x: 90, y: 45 },
     ],
-    heatmap: generateHeatmap(
-      [{ x: 4, y: 4 }, { x: 10, y: 8 }, { x: 7, y: 12 }, { x: 12, y: 3 }],
-      5,
-    ),
     events: [
       { id: 'e1', type: 'system', level: 'info', msg: 'agent started', ts: '2026-04-11T12:00:01Z' },
       { id: 'e2', type: 'camera', level: 'info', msg: 'feed connected on /dev/video0', ts: '2026-04-11T12:00:02Z' },
@@ -86,10 +83,6 @@ export const AGENTS: Agent[] = [
       { x: 70, y: 45 }, { x: 75, y: 50 }, { x: 80, y: 55 },
       { x: 85, y: 60 }, { x: 90, y: 65 }, { x: 92, y: 70 },
     ],
-    heatmap: generateHeatmap(
-      [{ x: 3, y: 6 }, { x: 8, y: 3 }, { x: 13, y: 10 }, { x: 6, y: 13 }],
-      4,
-    ),
     events: [
       { id: 'e1', type: 'system', level: 'info', msg: 'agent started', ts: '2026-04-11T11:45:00Z' },
       { id: 'e2', type: 'camera', level: 'info', msg: 'feed connected on /dev/video1', ts: '2026-04-11T11:45:01Z' },
@@ -107,7 +100,6 @@ export const AGENTS: Agent[] = [
       { x: 50, y: 50 }, { x: 52, y: 48 }, { x: 51, y: 46 },
       { x: 50, y: 47 }, { x: 49, y: 49 }, { x: 50, y: 50 },
     ],
-    heatmap: generateHeatmap([{ x: 8, y: 8 }], 3),
     events: [
       { id: 'e1', type: 'system', level: 'info', msg: 'agent started', ts: '2026-04-11T10:00:00Z' },
       { id: 'e2', type: 'camera', level: 'error', msg: 'feed timeout, device not found', ts: '2026-04-11T10:00:03Z' },
@@ -127,10 +119,6 @@ export const AGENTS: Agent[] = [
       { x: 50, y: 28 }, { x: 55, y: 32 }, { x: 60, y: 38 },
       { x: 65, y: 45 }, { x: 70, y: 50 }, { x: 75, y: 55 },
     ],
-    heatmap: generateHeatmap(
-      [{ x: 5, y: 5 }, { x: 11, y: 11 }, { x: 3, y: 12 }, { x: 14, y: 4 }],
-      4.5,
-    ),
     events: [
       { id: 'e1', type: 'system', level: 'info', msg: 'agent started', ts: '2026-04-11T08:00:00Z' },
       { id: 'e2', type: 'camera', level: 'info', msg: 'rosbridge connected ws://mars-the-18th.local:9090', ts: '2026-04-11T08:00:01Z' },

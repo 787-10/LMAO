@@ -291,7 +291,7 @@ export function fetchRosbridgeOnce<T = Record<string, unknown>>(
   })
 }
 
-// dedicated WS per image stream to avoid bandwidth contention
+// image stream via shared connection
 export function useRosbridgeImage(
   url: string | undefined,
   topic: string,
@@ -310,61 +310,31 @@ export function useRosbridgeImage(
   useEffect(() => {
     if (!url || !topic) return
 
-    let cancelled = false
-    let ws: WebSocket | null = null
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    const conn = getOrCreateConnection(url)
 
-    const wsUrl = url
-
-    function connect() {
-      if (cancelled) return
-      ws = new WebSocket(wsUrl)
-
-      ws.onopen = () => {
-        if (cancelled) { ws?.close(); return }
-        ws!.send(JSON.stringify({
-          op: 'subscribe',
-          topic,
-          type: 'sensor_msgs/msg/CompressedImage',
-          throttle_rate: throttleRate,
-        }))
-        setState((s) => ({ ...s, connected: true }))
-      }
-
-      ws.onmessage = (e) => {
-        if (cancelled || pausedRef.current) return
-        try {
-          const msg = JSON.parse(e.data)
-          if (msg.op === 'publish' && msg.topic === topic && msg.msg?.data) {
-            frameRef.current++
-            setState({
-              src: toDataUrl(msg.msg.data, msg.msg.format ?? 'jpeg'),
-              connected: true,
-              frameCount: frameRef.current,
-            })
-          }
-        } catch { /* ignore */ }
-      }
-
-      ws.onerror = () => {
-        if (!cancelled) setState((s) => ({ ...s, connected: false }))
-      }
-
-      ws.onclose = () => {
-        if (!cancelled) {
-          setState((s) => ({ ...s, connected: false }))
-          reconnectTimer = setTimeout(connect, 3000)
-        }
-      }
+    const listener: Listener = (t, msg) => {
+      if (t !== topic || pausedRef.current) return
+      const imgMsg = msg as { data?: number[] | string; format?: string }
+      if (!imgMsg.data) return
+      frameRef.current++
+      setState({
+        src: toDataUrl(imgMsg.data, imgMsg.format ?? 'jpeg'),
+        connected: true,
+        frameCount: frameRef.current,
+      })
     }
+    conn.listeners.add(listener)
+    addSubscription(url, { topic, type: 'sensor_msgs/msg/CompressedImage', throttleRate })
 
-    const startTimer = setTimeout(connect, 0)
+    const interval = setInterval(() => {
+      setState((s) => ({ ...s, connected: conn.connected }))
+    }, 500)
 
     return () => {
-      cancelled = true
-      clearTimeout(startTimer)
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-      if (ws && ws.readyState === WebSocket.OPEN) ws.close()
+      conn.listeners.delete(listener)
+      removeSubscription(url, topic)
+      clearInterval(interval)
+      releaseConnection(url)
     }
   }, [url, topic, throttleRate])
 
