@@ -9,7 +9,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
+
+from dotenv import load_dotenv
+
+load_dotenv()  # reads .env from project root
 
 from orchestrator.allocator.task_allocator import TaskAllocator
 from orchestrator.cli.repl import OperatorREPL
@@ -150,6 +155,11 @@ def main() -> None:
     for r in config.fleet:
         print(f"    {r.name} @ {r.host}:{r.port}")
     print(f"  Claude model: {config.claude.model}")
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("\n  WARNING: ANTHROPIC_API_KEY not set.")
+        print("  Copy .env.example to .env and add your key.")
+        print("  The reasoner will fail until this is configured.\n")
     print()
 
     asyncio.run(async_main(config, sim_mode=args.sim))
