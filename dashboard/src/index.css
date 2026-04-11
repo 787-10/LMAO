@@ -133,6 +133,15 @@
   --radius-4xl: 0px;
 }
 
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; filter: drop-shadow(0 0 3px currentColor); }
+  50% { opacity: 0.3; filter: drop-shadow(0 0 0px currentColor); }
+}
+
+.status-live {
+  animation: status-pulse 2s ease-in-out infinite;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

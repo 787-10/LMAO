@@ -15,19 +15,12 @@ export interface Point {
   y: number
 }
 
-export interface RosbridgeConfig {
-  url: string
-  topic: string
-  msgType: string
-  throttleRate?: number
-}
-
 export interface Agent {
   id: string
   name: string
   status: AgentStatus
   feedUrl: string
-  rosbridge?: RosbridgeConfig
+  rosbridgeUrl?: string
   events: AgentEvent[]
   track: Point[]
   heatmap: number[][]
@@ -120,6 +113,31 @@ export const AGENTS: Agent[] = [
       { id: 'e2', type: 'camera', level: 'error', msg: 'feed timeout, device not found', ts: '2026-04-11T10:00:03Z' },
       { id: 'e3', type: 'vision', level: 'error', msg: 'classification model failed to load', ts: '2026-04-11T10:00:05Z' },
       { id: 'e4', type: 'system', level: 'error', msg: 'shutting down, too many failures', ts: '2026-04-11T10:00:10Z' },
+    ],
+  },
+  {
+    id: 'agent-18',
+    name: 'AGENT-18',
+    status: 'online',
+    feedUrl: '/feeds/agent-18.mjpeg',
+    rosbridgeUrl: 'ws://mars-the-18th.local:9090',
+    track: [
+      { x: 20, y: 30 }, { x: 25, y: 35 }, { x: 30, y: 40 },
+      { x: 35, y: 38 }, { x: 40, y: 35 }, { x: 45, y: 30 },
+      { x: 50, y: 28 }, { x: 55, y: 32 }, { x: 60, y: 38 },
+      { x: 65, y: 45 }, { x: 70, y: 50 }, { x: 75, y: 55 },
+    ],
+    heatmap: generateHeatmap(
+      [{ x: 5, y: 5 }, { x: 11, y: 11 }, { x: 3, y: 12 }, { x: 14, y: 4 }],
+      4.5,
+    ),
+    events: [
+      { id: 'e1', type: 'system', level: 'info', msg: 'agent started', ts: '2026-04-11T08:00:00Z' },
+      { id: 'e2', type: 'camera', level: 'info', msg: 'rosbridge connected ws://mars-the-18th.local:9090', ts: '2026-04-11T08:00:01Z' },
+      { id: 'e3', type: 'camera', level: 'info', msg: 'subscribed to /mars/main_camera/left/image_raw/compressed', ts: '2026-04-11T08:00:02Z' },
+      { id: 'e4', type: 'nav', level: 'info', msg: 'gps lock acquired, 12 satellites', ts: '2026-04-11T08:00:10Z' },
+      { id: 'e5', type: 'system', level: 'debug', msg: 'telemetry stream active, 1hz', ts: '2026-04-11T08:00:15Z' },
+      { id: 'e6', type: 'nav', level: 'info', msg: 'waypoint 1/8 reached', ts: '2026-04-11T09:30:00Z' },
     ],
   },
 ]

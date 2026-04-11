@@ -47,7 +47,8 @@ function AgentCard({ agent }: { agent: Agent }) {
       <div className="p-3 border-t">
         <div className="flex items-center justify-between mb-1">
           <span className="font-bold text-xs">{agent.name}</span>
-          <span className={`text-xs ${statusColor(agent.status)}`}>
+          <span className={`text-xs flex items-center gap-1 ${statusColor(agent.status)}`}>
+            {agent.status === 'online' && <span className="status-live">●</span>}
             [{agent.status}]
           </span>
         </div>
@@ -77,7 +78,8 @@ function AgentRow({ agent }: { agent: Agent }) {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <span className={`text-xs ${statusColor(agent.status)}`}>
+          <span className={`text-xs flex items-center gap-1 ${statusColor(agent.status)}`}>
+            {agent.status === 'online' && <span className="status-live">●</span>}
             [{agent.status}]
           </span>
           <span className="text-muted-foreground text-xs">&gt;</span>

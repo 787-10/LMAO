@@ -12,7 +12,8 @@ function StatusDot({ status }: { status: string }) {
       : status === 'idle'
         ? 'text-term-yellow'
         : 'text-term-red'
-  return <span className={color}>●</span>
+  const live = status === 'online' || status === 'idle'
+  return <span className={`${color} ${live ? 'status-live' : ''}`}>●</span>
 }
 
 function RootLayout() {

@@ -4,7 +4,13 @@ const AGENTS = [
   { id: "arm-01", name: "ARM-01", status: "online", host: "arm-01.local" },
   { id: "nav-02", name: "NAV-02", status: "idle", host: "nav-02.local" },
   { id: "sort-03", name: "SORT-03", status: "offline", host: "sort-03.local" },
-  { id: "agent-18", name: "AGENT-18", status: "online", host: "mars-the-18th.local" },
+  {
+    id: "agent-18",
+    name: "AGENT-18",
+    status: "online",
+    host: "mars-the-18th.local",
+    rosbridgeUrl: "ws://mars-the-18th.local:9090",
+  },
 ];
 
 function json(res, status, data) {
