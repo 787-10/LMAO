@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="64" fill="#000"/>
+  <!-- antenna -->
+  <line x1="256" y1="72" x2="256" y2="120" stroke="#fff" stroke-width="16" stroke-linecap="round"/>
+  <circle cx="256" cy="64" r="16" fill="#fff"/>
+  <!-- head -->
+  <rect x="128" y="120" width="256" height="192" rx="32" fill="none" stroke="#fff" stroke-width="20"/>
+  <!-- eyes -->
+  <circle cx="200" cy="216" r="28" fill="#fff"/>
+  <circle cx="312" cy="216" r="28" fill="#fff"/>
+  <!-- mouth -->
+  <rect x="184" y="268" width="144" height="16" rx="8" fill="#fff"/>
+  <!-- neck -->
+  <rect x="232" y="312" width="48" height="24" fill="#fff" rx="4"/>
+  <!-- body -->
+  <rect x="152" y="336" width="208" height="120" rx="24" fill="none" stroke="#fff" stroke-width="20"/>
+  <!-- arms -->
+  <rect x="88" y="348" width="52" height="16" rx="8" fill="#fff"/>
+  <rect x="372" y="348" width="52" height="16" rx="8" fill="#fff"/>
+  <!-- chest details -->
+  <circle cx="224" cy="396" r="12" fill="#fff"/>
+  <circle cx="288" cy="396" r="12" fill="#fff"/>
+</svg>
