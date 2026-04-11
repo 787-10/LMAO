@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 load_dotenv()  # reads .env from project root
 
-from orchestrator.allocator.task_allocator import TaskAllocator
+from orchestrator.api import EventBroadcaster, _event_dict, create_api
 from orchestrator.cli.repl import OperatorREPL
 from orchestrator.comms.connection_manager import ConnectionManager
 from orchestrator.config import HubConfig, load_config
@@ -34,35 +34,55 @@ log = logging.getLogger("orchestrator")
 
 
 # ------------------------------------------------------------------
-# Event loop — bridges health events to the reasoner
+# Event loop — fans events to reasoner + WS broadcaster
 # ------------------------------------------------------------------
 
-async def event_loop(world: WorldModel, reasoner: ClaudeReasoner) -> None:
-    """Background task: drain health events and feed them to Claude."""
+async def event_loop(
+    world: WorldModel,
+    reasoner: ClaudeReasoner,
+    broadcaster: EventBroadcaster,
+    health: FleetHealthMonitor,
+) -> None:
+    """Background task: drain events, broadcast to WS clients, auto-replan."""
+    health_tick = 0
     while True:
         event = await world.get_next_event(timeout=1.0)
-        if event is None:
-            continue
-        log.info("EVENT  %s", event.describe())
 
-        # Only auto-replan on degradation / comms-loss events
-        if event.type in (
-            EventType.ROBOT_DEGRADED,
-            EventType.COMMS_LOST,
-            EventType.TASK_FAILED,
-        ):
-            try:
-                response = await reasoner.handle_health_event(event)
-                print(f"\n[REPLAN] {response}\n")
-            except Exception:
-                log.exception("Auto-replan failed for event %s", event.type)
+        if event is not None:
+            log.info("EVENT  %s", event.describe())
+            # Broadcast to all WS clients
+            await broadcaster.broadcast(_event_dict(event))
+            # Auto-replan on degradation / comms-loss / task failure
+            if event.type in (
+                EventType.ROBOT_DEGRADED,
+                EventType.COMMS_LOST,
+                EventType.TASK_FAILED,
+            ):
+                try:
+                    response = await reasoner.handle_health_event(event)
+                    print(f"\n[REPLAN] {response}\n")
+                except Exception:
+                    log.exception("Auto-replan failed for event %s", event.type)
+
+        # Periodic health snapshot for WS clients (every ~2s)
+        health_tick += 1
+        if health_tick >= 2:
+            health_tick = 0
+            report = health.get_health_report()
+            if report:
+                await broadcaster.broadcast({
+                    "type": "HEALTH_SNAPSHOT",
+                    "robot": "",
+                    "data": report,
+                    "timestamp": __import__("time").time(),
+                })
 
 
 # ------------------------------------------------------------------
 # Main
 # ------------------------------------------------------------------
 
-async def async_main(config: HubConfig, *, sim_mode: bool = False) -> None:
+async def async_main(config: HubConfig, *, sim_mode: bool = False, api_port: int = 8000) -> None:
     # 1. Initialize components
     world = WorldModel()
     simulator = None
@@ -76,13 +96,17 @@ async def async_main(config: HubConfig, *, sim_mode: bool = False) -> None:
 
     health = FleetHealthMonitor(conn, world, config.health)
     reasoner = ClaudeReasoner(world, conn, health, config.claude)
+    broadcaster = EventBroadcaster()
     repl = OperatorREPL(reasoner, world, health, simulator=simulator)
 
-    # 2. Register robots in world model
+    # 2. Create FastAPI app
+    app = create_api(world, health, reasoner, broadcaster, simulator=simulator)
+
+    # 3. Register robots in world model
     for robot_cfg in config.fleet:
         world.register_robot(robot_cfg.name, robot_cfg.capabilities)
 
-    # 3. Connect to all robots
+    # 4. Connect to all robots
     print("\nConnecting to fleet...")
     results = await conn.connect_all()
     for name, ok in results.items():
@@ -97,27 +121,36 @@ async def async_main(config: HubConfig, *, sim_mode: bool = False) -> None:
         print("\nWARNING: No robots connected.  The reasoner will still work")
         print("but cannot dispatch tasks.  Check fleet_config.yaml and robot IPs.\n")
 
-    # 4. Start simulator telemetry (before health monitor so callbacks exist)
+    # 5. Start simulator telemetry (before health monitor so callbacks exist)
     if simulator:
         await simulator.start()
 
-    # 5. Start health monitoring
+    # 6. Start health monitoring
     if connected_robots:
         await health.start(connected_robots)
 
-    # 6. Start background event loop
-    event_task = asyncio.create_task(event_loop(world, reasoner))
+    # 7. Start API server
+    import uvicorn
+    uvi_config = uvicorn.Config(app, host="0.0.0.0", port=api_port, log_level="warning")
+    server = uvicorn.Server(uvi_config)
+    api_task = asyncio.create_task(server.serve())
+    print(f"  API server: http://0.0.0.0:{api_port}")
 
-    # 7. Run the operator REPL (blocks until quit)
+    # 8. Start background event loop
+    ev_task = asyncio.create_task(event_loop(world, reasoner, broadcaster, health))
+
+    # 9. Run the operator REPL (blocks until quit)
     try:
         await repl.run()
     finally:
         print("\nShutting down...")
-        event_task.cancel()
+        ev_task.cancel()
+        server.should_exit = True
         try:
-            await event_task
+            await ev_task
         except asyncio.CancelledError:
             pass
+        await api_task
         if simulator:
             await simulator.stop()
         await health.stop()
@@ -136,6 +169,12 @@ def main() -> None:
         "--sim",
         action="store_true",
         help="Simulation mode — fake robots with synthetic telemetry",
+    )
+    parser.add_argument(
+        "--api-port",
+        type=int,
+        default=8000,
+        help="Port for the REST/WS API server (default: 8000)",
     )
     args = parser.parse_args()
 
@@ -162,7 +201,7 @@ def main() -> None:
         print("  The reasoner will fail until this is configured.\n")
     print()
 
-    asyncio.run(async_main(config, sim_mode=args.sim))
+    asyncio.run(async_main(config, sim_mode=args.sim, api_port=args.api_port))
 
 
 if __name__ == "__main__":
