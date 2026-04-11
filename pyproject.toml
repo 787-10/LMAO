@@ -1,0 +1,13 @@
+[project]
+name = "lmao"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=0.94.0",
+    "prompt-toolkit>=3.0.52",
+    "python-dotenv>=1.2.2",
+    "pyyaml>=6.0.3",
+    "roslibpy>=2.0.0",
+]
