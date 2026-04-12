@@ -7,7 +7,7 @@ import {
   type AgentEvent,
   type EventLevel,
 } from '@/lib/agents'
-import { useRosbridgeImage, useRosbridgeTopic, useRosbridgeStatus, publishRosbridge, sampleFromShared } from '@/hooks/useRosbridge'
+import { useRosbridgeImage, useRosbridgeTopic, useRosbridgeStatus, publishRosbridge, sampleFromShared, sendActionGoal } from '@/hooks/useRosbridge'
 
 export const agentRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -648,6 +648,211 @@ function SkillStatusPanel({ url }: { url: string }) {
   )
 }
 
+interface SkillMsg { id: string; skill_type?: string; display_name?: string; name?: string }
+interface AvailableSkillsMsg { skills: SkillMsg[] }
+
+interface SkillResult { ok: boolean; message: string; ts: string }
+
+// Skills that require inline parameter inputs before running
+const SKILL_PARAMS: Record<string, { label: string; key: string; placeholder: string }[]> = {
+  'navigate_to_position': [
+    { label: 'X', key: 'x', placeholder: '0.0' },
+    { label: 'Y', key: 'y', placeholder: '0.0' },
+    { label: 'θ', key: 'theta', placeholder: '0.0' },
+  ],
+}
+
+function skillParamKey(id: string): string | null {
+  for (const key of Object.keys(SKILL_PARAMS)) {
+    if (id.includes(key)) return key
+  }
+  return null
+}
+
+function SkillsPanel({ url }: { url: string }) {
+  const { data } = useRosbridgeTopic<AvailableSkillsMsg>(
+    url, '/brain/available_skills', 'brain_messages/msg/AvailableSkills',
+  )
+  const [running, setRunning] = useState<string | null>(null)
+  const [results, setResults] = useState<Record<string, SkillResult>>({})
+  const [params, setParams] = useState<Record<string, Record<string, string>>>({})
+
+  const skills = data?.skills ?? []
+
+  function setParam(skillId: string, key: string, value: string) {
+    setParams(p => ({ ...p, [skillId]: { ...p[skillId], [key]: value } }))
+  }
+
+  function run(skillId: string) {
+    if (running) return
+    setRunning(skillId)
+    setResults((r) => ({ ...r, [skillId]: { ok: false, message: 'running…', ts: new Date().toLocaleTimeString() } }))
+
+    const paramKey = skillParamKey(skillId)
+    const inputs: Record<string, unknown> = {}
+    if (paramKey) {
+      for (const field of SKILL_PARAMS[paramKey]) {
+        const raw = params[skillId]?.[field.key] ?? ''
+        const num = parseFloat(raw)
+        inputs[field.key] = isNaN(num) ? 0 : num
+      }
+    }
+
+    sendActionGoal(url, skillId, (ok, message) => {
+      setResults((r) => ({ ...r, [skillId]: { ok, message, ts: new Date().toLocaleTimeString() } }))
+      setRunning(null)
+    }, inputs)
+  }
+
+  const inputCls = 'w-14 bg-background border border-border px-1 py-0.5 text-[10px] font-mono focus:outline-none focus:border-term-cyan'
+
+  return (
+    <div className="tui-panel bg-card flex flex-col col-span-2">
+      <PanelHeader title="SKILLS" right={skills.length ? `${skills.length} available` : 'loading…'} />
+      <div className="flex flex-col divide-y text-xs max-h-72 overflow-y-auto">
+        {skills.length === 0 && (
+          <div className="px-3 py-3 text-muted-foreground">no skills received</div>
+        )}
+        {skills.map((sk) => {
+          const id = sk.id ?? sk.skill_type ?? '?'
+          const name = sk.display_name ?? sk.name ?? id
+          const res = results[id]
+          const isRunning = running === id
+          const paramKey = skillParamKey(id)
+          const fields = paramKey ? SKILL_PARAMS[paramKey] : null
+
+          return (
+            <div key={id} className="px-3 py-1.5 space-y-1">
+              <div className="flex items-center gap-2">
+                <div className="flex-1 min-w-0">
+                  <div className="text-foreground truncate">{name}</div>
+                  <div className="text-muted-foreground text-[10px] truncate">{id}</div>
+                </div>
+                {fields && (
+                  <div className="flex items-center gap-1 shrink-0">
+                    {fields.map(f => (
+                      <div key={f.key} className="flex flex-col items-center gap-0.5">
+                        <span className="text-[9px] text-muted-foreground">{f.label}</span>
+                        <input
+                          className={inputCls}
+                          placeholder={f.placeholder}
+                          value={params[id]?.[f.key] ?? ''}
+                          onChange={e => setParam(id, f.key, e.target.value)}
+                          onKeyDown={e => e.key === 'Enter' && run(id)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <button
+                  onClick={() => run(id)}
+                  disabled={!!running}
+                  className="shrink-0 text-[10px] px-2 py-0.5 border border-term-green text-term-green bg-transparent hover:bg-term-green/10 disabled:opacity-40 disabled:cursor-not-allowed font-mono"
+                >
+                  {isRunning ? '…' : '▶ RUN'}
+                </button>
+              </div>
+              {res && (
+                <div className={`text-[10px] ${res.message === 'running…' ? 'text-term-cyan' : res.ok ? 'text-term-green' : 'text-term-red'}`}>
+                  {res.ts} — {res.message}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function GotoPanel({ url }: { url: string }) {
+  const [x, setX] = useState('')
+  const [y, setY] = useState('')
+  const [theta, setTheta] = useState('0')
+  const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [running, setRunning] = useState(false)
+
+  function send() {
+    const px = parseFloat(x)
+    const py = parseFloat(y)
+    const pt = parseFloat(theta)
+    if (isNaN(px) || isNaN(py)) { setStatus({ ok: false, msg: 'invalid x or y' }); return }
+    setRunning(true)
+    setStatus({ ok: true, msg: `sending → (${px}, ${py}, θ=${isNaN(pt) ? 0 : pt})…` })
+    sendActionGoal(url, 'innate-os/goto_coordinates', (ok, msg) => {
+      setStatus({ ok, msg: msg || (ok ? 'done' : 'failed') })
+      setRunning(false)
+    }, { x: px, y: py, theta: isNaN(pt) ? 0 : pt })
+  }
+
+  const inputCls = 'w-full bg-background border border-border px-2 py-1 text-xs font-mono focus:outline-none focus:border-term-cyan'
+
+  return (
+    <div className="tui-panel bg-card">
+      <PanelHeader title="GO TO COORDINATES" />
+      <div className="p-2 space-y-2 text-xs">
+        <div className="grid grid-cols-3 gap-1.5">
+          <div>
+            <div className="text-muted-foreground mb-0.5">X (m)</div>
+            <input className={inputCls} placeholder="0.0" value={x} onChange={e => setX(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} />
+          </div>
+          <div>
+            <div className="text-muted-foreground mb-0.5">Y (m)</div>
+            <input className={inputCls} placeholder="0.0" value={y} onChange={e => setY(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} />
+          </div>
+          <div>
+            <div className="text-muted-foreground mb-0.5">θ (rad)</div>
+            <input className={inputCls} placeholder="0.0" value={theta} onChange={e => setTheta(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} />
+          </div>
+        </div>
+        <button
+          onClick={send}
+          disabled={running}
+          className="w-full py-1 border border-term-green text-term-green bg-transparent hover:bg-term-green/10 disabled:opacity-40 disabled:cursor-not-allowed font-mono text-xs"
+        >
+          {running ? 'NAVIGATING…' : '▶ GO'}
+        </button>
+        {status && (
+          <div className={`font-mono truncate ${status.ok ? 'text-term-green' : 'text-term-red'}`}>
+            {status.msg}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SkillUpdatePanel({ url }: { url: string }) {
+  const [text, setText] = useState('')
+
+  function send() {
+    if (!text.trim()) return
+    publishRosbridge(url, '/brain/skill_status_update', 'std_msgs/msg/String', { data: text.trim() })
+    setText('')
+  }
+
+  return (
+    <div className="tui-panel bg-card">
+      <PanelHeader title="SKILL UPDATE" />
+      <div className="p-2 space-y-2 text-xs">
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && send()}
+          placeholder="status update..."
+          className="w-full bg-background border border-border px-2 py-1 text-xs font-mono focus:outline-none focus:border-term-cyan"
+        />
+        <button
+          onClick={send}
+          className="w-full py-1 border border-term-green text-term-green bg-transparent hover:bg-term-green/10 font-mono text-xs"
+        >
+          ▶ PUBLISH
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function TTSPanel({ url }: { url: string }) {
   const { data } = useRosbridgeTopic<{ data?: boolean }>(url, '/tts/is_playing', undefined, 500)
   return (
@@ -1247,9 +1452,10 @@ const TRACK_MIN_DIST = 0.05 // meters between recorded points
 function LiveLocationTrack({ url }: { url: string }) {
   const trackRef = useRef<{ x: number; y: number }[]>([])
   const [track, setTrack] = useState<{ x: number; y: number }[]>([])
+  // /amcl_pose = map frame — same coordinate system as navigate_to_position
   const { data } = useRosbridgeTopic<{
     pose?: { pose?: { position?: { x: number; y: number } } }
-  }>(url, '/odom', 'nav_msgs/msg/Odometry', 300)
+  }>(url, '/amcl_pose', 'geometry_msgs/msg/PoseWithCovarianceStamped', 200)
 
   useEffect(() => {
     if (!data?.pose?.pose?.position) return
@@ -1528,6 +1734,595 @@ function LidarGroup({ url }: { url: string }) {
   )
 }
 
+// -- ported from lucas_dashboard: diagnostics / telemetry --
+
+function CmdVelPanel({ url }: { url: string }) {
+  const { data } = useRosbridgeTopic<{
+    linear?: { x: number; y: number; z: number }
+    angular?: { x: number; y: number; z: number }
+  }>(url, '/cmd_vel', 'geometry_msgs/msg/Twist', 200)
+  return (
+    <div className="tui-panel bg-card">
+      <PanelHeader title="CMD_VEL" />
+      <div className="p-2 text-xs space-y-1">
+        <TelemetryRow label="lin.x" value={formatNum(data?.linear?.x)} color="text-term-green" />
+        <TelemetryRow label="lin.y" value={formatNum(data?.linear?.y)} color="text-term-green" />
+        <TelemetryRow label="ang.z" value={formatNum(data?.angular?.z)} color="text-term-yellow" />
+      </div>
+    </div>
+  )
+}
+
+function SysStatsPanel({ url }: { url: string }) {
+  const { data } = useRosbridgeTopic<{ data?: string }>(url, '/robot/sys_stats', 'std_msgs/msg/String', 2000)
+
+  const stats = (() => {
+    try { return data?.data ? JSON.parse(data.data) : null } catch { return null }
+  })()
+
+  const cpuPct: number | null = stats?.gpu?.cpu_avg_pct ?? null
+  const gpuPct: number | null = stats?.gpu?.gpu_pct ?? null
+  const ramPct: number | null = stats?.gpu?.ram_pct ?? stats?.memory?.used_pct ?? null
+  const hottest: { zone: string; temp_c: number } | null = stats?.thermal?.hottest ?? null
+  const load1m: number | null = stats?.cpu?.load_1m ?? null
+  const powerMw: number | null = stats?.gpu?.power_mw ?? null
+
+  const bar = (pct: number | null, danger = 80) => {
+    const v = pct ?? 0
+    const color = v > danger ? '#af5f5f' : v > danger * 0.65 ? '#afaf5f' : '#5faf5f'
+    return (
+      <div className="h-1.5 w-full bg-muted rounded-sm overflow-hidden">
+        <div className="h-full rounded-sm transition-all" style={{ width: `${v}%`, backgroundColor: color }} />
+      </div>
+    )
+  }
+
+  return (
+    <div className="tui-panel bg-card">
+      <PanelHeader title="SYS STATS" right={stats ? 'live' : 'no data'} />
+      <div className="p-2 text-xs space-y-2">
+        {stats ? <>
+          <div>
+            <div className="flex justify-between mb-0.5"><span className="text-muted-foreground">CPU</span><span className={cpuPct != null && cpuPct > 80 ? 'text-term-red' : 'text-term-green'}>{cpuPct != null ? `${cpuPct}%` : `load ${load1m?.toFixed(2) ?? '--'}`}</span></div>
+            {bar(cpuPct)}
+          </div>
+          <div>
+            <div className="flex justify-between mb-0.5"><span className="text-muted-foreground">GPU</span><span className={gpuPct != null && gpuPct > 80 ? 'text-term-red' : 'text-term-green'}>{gpuPct != null ? `${gpuPct}%` : '--'}</span></div>
+            {bar(gpuPct)}
+          </div>
+          <div>
+            <div className="flex justify-between mb-0.5"><span className="text-muted-foreground">RAM</span><span className="text-term-yellow">{ramPct != null ? `${ramPct}%` : '--'}</span></div>
+            {bar(ramPct, 85)}
+          </div>
+          {hottest && <TelemetryRow label="temp" value={`${hottest.temp_c}\u00b0C (${hottest.zone})`} color={hottest.temp_c > 70 ? 'text-term-red' : hottest.temp_c > 50 ? 'text-term-yellow' : 'text-muted-foreground'} />}
+          {powerMw != null && <TelemetryRow label="power" value={`${(powerMw / 1000).toFixed(1)} W`} />}
+        </> : <span className="text-muted-foreground">run sys_stats_pub.py on robot</span>}
+      </div>
+    </div>
+  )
+}
+
+function BatteryPanel({ url }: { url: string }) {
+  const { data } = useRosbridgeTopic<{
+    voltage?: number
+    percentage?: number
+    current?: number
+    temperature?: number
+  }>(url, '/battery_state', 'sensor_msgs/msg/BatteryState', 1000)
+
+  const pct = data?.percentage != null ? Math.round(data.percentage * 100) : null
+  const voltage = data?.voltage ?? null
+  const current = data?.current ?? null
+  const temp = data?.temperature ?? null
+
+  const pctColor = pct == null ? 'text-muted-foreground'
+    : pct > 60 ? 'text-term-green'
+    : pct > 30 ? 'text-term-yellow'
+    : 'text-term-red'
+
+  const barWidth = pct ?? 0
+  const barColor = pct == null ? '#333'
+    : pct > 60 ? '#5faf5f'
+    : pct > 30 ? '#afaf5f'
+    : '#af5f5f'
+
+  return (
+    <div className="tui-panel bg-card">
+      <PanelHeader title="BATTERY" right={pct != null ? `${pct}%` : '--'} />
+      <div className="p-2 space-y-2">
+        <div className="h-2 w-full bg-muted rounded-sm overflow-hidden">
+          <div className="h-full rounded-sm transition-all" style={{ width: `${barWidth}%`, backgroundColor: barColor }} />
+        </div>
+        <div className="text-xs space-y-1">
+          <TelemetryRow label="voltage" value={voltage != null ? `${voltage.toFixed(2)} V` : '--'} color={pctColor} />
+          <TelemetryRow label="current" value={current != null ? `${current.toFixed(2)} A` : '--'} />
+          {temp != null && temp > 0 && (
+            <TelemetryRow label="temp" value={`${temp.toFixed(1)} \u00b0C`} color={temp > 50 ? 'text-term-red' : 'text-term-yellow'} />
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ImuAccelPanel({ url }: { url: string }) {
+  const { data } = useRosbridgeTopic<{ data?: string }>(url, '/robot/imu_odom', 'std_msgs/msg/String', 0)
+
+  const parsed = (() => { try { return data?.data ? JSON.parse(data.data) : null } catch { return null } })()
+  const xacc: number = parsed?.xacc ?? 0
+  const yacc: number = parsed?.yacc ?? 0
+  const zacc: number = parsed?.zacc ?? 0
+  const pitch: number = parsed?.pitch ?? 0
+  const roll: number  = parsed?.roll  ?? 0
+  const yaw: number   = parsed?.yaw   ?? 0
+
+  const MAX_MG = 2000
+
+  const AccelBar = ({ val, color, label }: { val: number; color: string; label: string }) => {
+    const pct = Math.min(Math.abs(val) / MAX_MG * 50, 50)
+    const isNeg = val < 0
+    return (
+      <div className="space-y-0.5">
+        <div className="flex justify-between text-[10px]">
+          <span className="text-muted-foreground">{label}</span>
+          <span className="font-mono" style={{ color }}>{val > 0 ? '+' : ''}{val} mg</span>
+        </div>
+        <div className="h-2 w-full bg-muted rounded-sm relative overflow-hidden">
+          <div className="absolute top-0 bottom-0 bg-muted-foreground/20" style={{ left: '50%', width: '1px' }} />
+          <div
+            className="absolute top-0 bottom-0 rounded-sm transition-all duration-75"
+            style={{
+              backgroundColor: color,
+              width: `${pct}%`,
+              left: isNeg ? `${50 - pct}%` : '50%',
+            }}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="tui-panel bg-card flex flex-col">
+      <PanelHeader title="IMU ACCEL" right={parsed ? 'live pixhawk' : 'run imu_odom_pub.py'} />
+      <div className="p-2 space-y-2 text-xs">
+        {parsed ? <>
+          <AccelBar val={xacc} color="#af5f5f" label="X (fwd)" />
+          <AccelBar val={yacc} color="#5faf5f" label="Y (left)" />
+          <AccelBar val={zacc} color="#5f87af" label="Z (up)" />
+          <div className="border-t pt-1 mt-1 grid grid-cols-3 gap-1 text-[10px] text-muted-foreground">
+            <span>roll {roll > 0 ? '+' : ''}{roll.toFixed(1)}{'\u00b0'}</span>
+            <span>pitch {pitch > 0 ? '+' : ''}{pitch.toFixed(1)}{'\u00b0'}</span>
+            <span>yaw {yaw > 0 ? '+' : ''}{yaw.toFixed(1)}{'\u00b0'}</span>
+          </div>
+        </> : (
+          <div className="text-muted-foreground text-center py-2">no data</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// -- TTS play/stop control + input config --
+
+function TTSControlPanel({ url }: { url: string }) {
+  return (
+    <div className="tui-panel bg-card">
+      <PanelHeader title="TTS CONTROL" />
+      <div className="p-2 flex gap-1">
+        <button
+          onClick={() => publishRosbridge(url, '/tts/is_playing', 'std_msgs/msg/Bool', { data: true })}
+          className="text-xs px-2 py-1 bg-secondary text-secondary-foreground hover:bg-accent flex-1"
+        >
+          play
+        </button>
+        <button
+          onClick={() => publishRosbridge(url, '/tts/is_playing', 'std_msgs/msg/Bool', { data: false })}
+          className="text-xs px-2 py-1 bg-secondary text-secondary-foreground hover:bg-accent flex-1"
+        >
+          stop
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function InputConfigPanel({ url }: { url: string }) {
+  const [text, setText] = useState('')
+
+  function send() {
+    if (!text.trim()) return
+    publishRosbridge(url, '/input_manager/active_inputs', 'std_msgs/msg/String', { data: text.trim() })
+    setText('')
+  }
+
+  return (
+    <div className="tui-panel bg-card">
+      <PanelHeader title="INPUT CONFIG" />
+      <div className="p-2 flex gap-1">
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && send()}
+          placeholder="config json..."
+          className="flex-1 bg-secondary text-foreground text-xs px-2 py-1 border outline-none focus:border-primary"
+        />
+        <button onClick={send} className="text-xs px-2 py-1 bg-primary text-primary-foreground hover:bg-accent">
+          send
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// -- depth cloud (top-down XZ projection from PointCloud2) --
+
+interface PCLField { name: string; offset: number; datatype: number; count: number }
+interface PointCloud2Msg {
+  height: number
+  width: number
+  fields: PCLField[]
+  is_bigendian: boolean
+  point_step: number
+  row_step: number
+  data: number[] | string
+  is_dense: boolean
+}
+
+function decodePointCloudXZ(msg: PointCloud2Msg, sample = 20): [number, number][] {
+  const { fields, point_step, data } = msg
+  const xField = fields.find(f => f.name === 'x')
+  const zField = fields.find(f => f.name === 'z')
+  if (!xField || !zField) return []
+
+  let bytes: Uint8Array
+  if (typeof data === 'string') {
+    const bin = atob(data)
+    bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  } else {
+    bytes = new Uint8Array(data)
+  }
+
+  const view = new DataView(bytes.buffer)
+  const points: [number, number][] = []
+  const le = !msg.is_bigendian
+  const total = Math.floor(bytes.length / point_step)
+
+  for (let i = 0; i < total; i += sample) {
+    const base = i * point_step
+    const x = view.getFloat32(base + xField.offset, le)
+    const z = view.getFloat32(base + zField.offset, le)
+    if (isFinite(x) && isFinite(z) && z > 0 && z < 10) {
+      points.push([x, z])
+    }
+  }
+  return points
+}
+
+function DepthCloudPanel({ url }: { url: string }) {
+  const { data } = useRosbridgeTopic<PointCloud2Msg>(
+    url, '/mars/main_camera/points', 'sensor_msgs/msg/PointCloud2', 2000,
+  )
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const [pointCount, setPointCount] = useState(0)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || !data) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const w = canvas.width, h = canvas.height
+    ctx.fillStyle = '#080808'
+    ctx.fillRect(0, 0, w, h)
+
+    const pts = decodePointCloudXZ(data, 15)
+    setPointCount(pts.length)
+    if (!pts.length) return
+
+    const xScale = w / 6
+    const zScale = h / 6
+    const cx = w / 2
+
+    for (const [x, z] of pts) {
+      const px = cx + x * xScale
+      const py = h - z * zScale
+      if (px < 0 || px > w || py < 0 || py > h) continue
+      const norm = Math.min(z / 5, 1)
+      const r = Math.round((1 - norm) * 220)
+      const g = Math.round(norm * 180)
+      ctx.fillStyle = `rgb(${r},${g},60)`
+      ctx.fillRect(px, py, 2, 2)
+    }
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)'
+    ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, h); ctx.stroke()
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)'
+    for (const d of [1, 2, 3, 4, 5]) {
+      const py = h - d * zScale
+      ctx.beginPath(); ctx.moveTo(0, py); ctx.lineTo(w, py); ctx.stroke()
+      ctx.fillStyle = 'rgba(255,255,255,0.3)'
+      ctx.font = '9px monospace'
+      ctx.fillText(`${d}m`, 2, py - 2)
+    }
+  }, [data])
+
+  return (
+    <div className="tui-panel bg-card flex flex-col">
+      <PanelHeader title="DEPTH CLOUD" right={data ? `${pointCount} pts` : 'no data'} />
+      <div className="p-1">
+        <canvas ref={canvasRef} width={320} height={240} className="w-full" style={{ imageRendering: 'pixelated' }} />
+      </div>
+    </div>
+  )
+}
+
+// -- lidar x vision cross-check --
+
+type CheckState = 'idle' | 'checking' | 'waiting_brain' | 'done'
+
+interface CheckResult {
+  verdict: 'clear' | 'lidar_error' | 'obstacle_confirmed' | 'no_anomaly'
+  message: string
+  anomaly?: { angleDeg: number; rangeM: number; clusterSize: number; medianM: number }
+  brainReply?: string
+}
+
+function findLidarAnomaly(scan: LaserScanMsg): CheckResult['anomaly'] | null {
+  const { ranges, range_min, range_max, angle_min, angle_increment } = scan
+  const rmin = range_min ?? 0.15
+  const rmax = range_max ?? 12.0
+
+  const isBlocked = (r: number | null) =>
+    r == null || !isFinite(r) || r <= 0 || r < rmin
+
+  const valid = ranges.filter(r => r != null && isFinite(r) && r > rmin && r < rmax) as number[]
+  const median = valid.length >= 20
+    ? [...valid].sort((a, b) => a - b)[Math.floor(valid.length / 2)]
+    : null
+
+  const hot = ranges.reduce<number[]>((acc, r, i) => {
+    if (isBlocked(r)) { acc.push(i); return acc }
+    if (median && (r as number) < median * 0.35) { acc.push(i); return acc }
+    return acc
+  }, [])
+
+  if (hot.length < 5) return null
+
+  const clusters: number[][] = []
+  let cur = [hot[0]]
+  for (let i = 1; i < hot.length; i++) {
+    if (hot[i] - cur[cur.length - 1] <= 3) cur.push(hot[i])
+    else { clusters.push(cur); cur = [hot[i]] }
+  }
+  clusters.push(cur)
+  const best = clusters.reduce((a, b) => b.length > a.length ? b : a)
+  if (best.length < 5) return null
+
+  const midIdx = best[Math.floor(best.length / 2)]
+  const midAngle = angle_min + midIdx * angle_increment
+  const midRange = ranges[midIdx]
+  return {
+    angleDeg: Math.round(midAngle * (180 / Math.PI) * 10) / 10,
+    rangeM: midRange != null && isFinite(midRange) ? Math.round(midRange * 1000) / 1000 : 0,
+    clusterSize: best.length,
+    medianM: median ? Math.round(median * 1000) / 1000 : 0,
+  }
+}
+
+function LidarVisionCheck({ url }: { url: string }) {
+  const { data: scan } = useRosbridgeTopic<LaserScanMsg>(url, '/scan', 'sensor_msgs/msg/LaserScan', 500)
+  const { data: chatOut } = useRosbridgeTopic<{ data?: string }>(url, '/brain/chat_out', 'std_msgs/msg/String', 0)
+  const { data: tts } = useRosbridgeTopic<{ data?: string }>(url, '/brain/tts', 'std_msgs/msg/String', 0)
+  const [state, setState] = useState<CheckState>('idle')
+  const [result, setResult] = useState<CheckResult | null>(null)
+  const sessionRef = useRef(0)
+  const waitingSession = useRef(-1)
+
+  function handleBrainReply(reply: string) {
+    if (waitingSession.current < 0) return
+    const session = waitingSession.current
+    waitingSession.current = -1
+    const confirmed = reply.trim().toUpperCase().startsWith('YES')
+    setResult((prev) => {
+      if (session !== sessionRef.current) return prev
+      return {
+        verdict: confirmed ? 'obstacle_confirmed' : 'lidar_error',
+        message: confirmed
+          ? `Obstacle confirmed by camera.`
+          : `LIDAR ERROR: sensor sees obstacle but camera sees nothing.`,
+        anomaly: prev?.anomaly,
+        brainReply: reply,
+      }
+    })
+    setState('done')
+  }
+
+  useEffect(() => {
+    if (chatOut?.data) handleBrainReply(chatOut.data)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatOut])
+
+  useEffect(() => {
+    if (tts?.data) handleBrainReply(tts.data)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tts])
+
+  function runCheck() {
+    if (state === 'checking' || state === 'waiting_brain') return
+    if (!scan) { setResult({ verdict: 'clear', message: 'No scan data yet.' }); setState('done'); return }
+
+    const session = ++sessionRef.current
+    setState('checking')
+    setResult(null)
+    waitingSession.current = -1
+
+    const anomaly = findLidarAnomaly(scan)
+    if (!anomaly) {
+      setResult({ verdict: 'no_anomaly', message: 'Lidar looks normal \u2014 no close-range anomalies detected.' })
+      setState('done')
+      return
+    }
+
+    setState('waiting_brain')
+    waitingSession.current = session
+    const question = `Look straight ahead. Is there a solid physical object, wall, or obstacle directly blocking the camera view or the robot's immediate path? Answer with YES or NO followed by one sentence of explanation.`
+    publishRosbridge(url, '/brain/chat_in', 'std_msgs/msg/String', { data: question })
+
+    setResult({ verdict: 'clear', message: `Anomaly at ${anomaly.angleDeg}\u00b0 / ${anomaly.rangeM}m \u2014 asking brain\u2026`, anomaly })
+
+    setTimeout(() => {
+      if (waitingSession.current !== session) return
+      waitingSession.current = -1
+      setResult({ verdict: 'clear', message: 'Brain did not respond in time.', anomaly })
+      setState('done')
+    }, 20000)
+  }
+
+  const verdictColor = !result ? '' :
+    result.verdict === 'lidar_error' ? 'text-term-red' :
+    result.verdict === 'obstacle_confirmed' ? 'text-term-green' :
+    result.verdict === 'no_anomaly' ? 'text-term-green' : 'text-term-yellow'
+
+  return (
+    <div className="tui-panel bg-card flex flex-col col-span-2">
+      <PanelHeader title="LIDAR x VISION CHECK" right={scan ? `${scan.ranges?.length ?? 0} beams` : 'no scan'} />
+      <div className="p-3 space-y-2 text-xs">
+        <button
+          onClick={runCheck}
+          disabled={state === 'checking' || state === 'waiting_brain'}
+          className="w-full py-1 border border-term-cyan text-term-cyan bg-transparent hover:bg-term-cyan/10 disabled:opacity-40 disabled:cursor-not-allowed font-mono text-xs"
+        >
+          {state === 'checking' ? 'ANALYZING LIDAR\u2026' : state === 'waiting_brain' ? 'ASKING BRAIN\u2026' : '\u25b6 RUN LIDAR x VISION CHECK'}
+        </button>
+        {result && (
+          <div className="space-y-1">
+            <div className={`font-mono ${verdictColor}`}>{result.message}</div>
+            {result.anomaly && (
+              <div className="text-muted-foreground">
+                anomaly: {result.anomaly.angleDeg}{'\u00b0'} - {result.anomaly.rangeM}m - {result.anomaly.clusterSize} beams - median {result.anomaly.medianM}m
+              </div>
+            )}
+            {result.brainReply && (
+              <div className="text-muted-foreground italic">brain: &quot;{result.brainReply}&quot;</div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// -- odom fdir (wheel slip detection) --
+
+function OdomFdirPanel({ url }: { url: string }) {
+  const { data: odomData } = useRosbridgeTopic<Record<string, unknown>>(url, '/odom', 'nav_msgs/msg/Odometry', 200)
+  const { data: amclData } = useRosbridgeTopic<Record<string, unknown>>(url, '/amcl_pose', 'geometry_msgs/msg/PoseWithCovarianceStamped', 200)
+
+  const baselineRef = useRef<{ odom: [number, number] | null; amcl: [number, number] | null } | null>(null)
+  const [running, setRunning] = useState(false)
+  const [verdict, setVerdict] = useState<{ status: string; msg: string } | null>(null)
+
+  const latestOdomDeltaRef = useRef<number | null>(null)
+  const latestAmclDeltaRef = useRef<number | null>(null)
+
+  const getPos = (d: Record<string, unknown> | null): [number, number] | null => {
+    try {
+      const pose = (d as { pose?: { pose?: { position?: { x?: unknown; y?: unknown } } } } | null)?.pose?.pose?.position
+      if (typeof pose?.x === 'number' && typeof pose?.y === 'number') return [pose.x, pose.y]
+    } catch { /* ignore */ }
+    return null
+  }
+
+  const odomPos = getPos(odomData)
+  const amclPos = getPos(amclData)
+
+  const dist = (a: [number, number] | null, b: [number, number] | null) =>
+    a && b ? Math.hypot(b[0] - a[0], b[1] - a[1]) : null
+
+  const odomDelta = running ? dist(baselineRef.current?.odom ?? null, odomPos) : null
+  const amclDelta = running ? dist(baselineRef.current?.amcl ?? null, amclPos) : null
+
+  latestOdomDeltaRef.current = odomDelta
+  latestAmclDeltaRef.current = amclDelta
+
+  const divergence = odomDelta != null && amclDelta != null ? odomDelta - amclDelta : null
+  const isFault = divergence != null && odomDelta != null && odomDelta > 0.15 && divergence > odomDelta * 0.5
+
+  function startCheck() {
+    baselineRef.current = { odom: odomPos, amcl: amclPos }
+    latestOdomDeltaRef.current = null
+    latestAmclDeltaRef.current = null
+    setRunning(true)
+    setVerdict(null)
+    setTimeout(() => {
+      const od = latestOdomDeltaRef.current
+      const ad = latestAmclDeltaRef.current
+      const fault = od != null && od > 0.15 && ad != null && ad < od * 0.5
+      setRunning(false)
+      setVerdict(fault
+        ? { status: 'fault', msg: `Wheel slip! Odom: ${od?.toFixed(3)}m  AMCL: ${ad?.toFixed(3)}m` }
+        : { status: 'nominal', msg: `All sources agree \u2014 odom: ${od?.toFixed(3)}m  amcl: ${ad?.toFixed(3)}m` }
+      )
+    }, 20000)
+  }
+
+  const bar = (val: number | null, max: number, color: string) => (
+    <div className="h-2 w-full bg-muted rounded-sm overflow-hidden">
+      <div className="h-full rounded-sm transition-all" style={{ width: `${Math.min(100, ((val ?? 0) / max) * 100)}%`, backgroundColor: color }} />
+    </div>
+  )
+
+  return (
+    <div className="tui-panel bg-card flex flex-col col-span-2">
+      <PanelHeader title="ODOM FDIR" right="wheel slip detection" />
+      <div className="p-3 space-y-3 text-xs">
+        <button
+          onClick={startCheck}
+          disabled={running}
+          className="w-full py-1 border border-term-cyan text-term-cyan bg-transparent hover:bg-term-cyan/10 disabled:opacity-40 disabled:cursor-not-allowed font-mono text-xs"
+        >
+          {running ? 'MONITORING\u2026 (lift wheels now)' : '\u25b6 START ODOM FDIR CHECK'}
+        </button>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <div className="flex justify-between mb-1">
+              <span className="text-muted-foreground">ODOM {'\u0394'}</span>
+              <span className="text-term-yellow font-mono">{odomDelta != null ? `${odomDelta.toFixed(3)}m` : '--'}</span>
+            </div>
+            {bar(odomDelta, 1.2, '#afaf5f')}
+            <div className="text-[10px] text-muted-foreground mt-0.5">wheel encoders</div>
+          </div>
+          <div>
+            <div className="flex justify-between mb-1">
+              <span className="text-muted-foreground">AMCL {'\u0394'}</span>
+              <span className="text-term-green font-mono">{amclDelta != null ? `${amclDelta.toFixed(3)}m` : '--'}</span>
+            </div>
+            {bar(amclDelta, 1.2, '#5faf5f')}
+            <div className="text-[10px] text-muted-foreground mt-0.5">lidar map-match</div>
+          </div>
+        </div>
+
+        {running && divergence != null && (
+          <div className={`font-mono text-center py-1 border ${isFault ? 'border-term-red text-term-red' : 'border-term-green text-term-green'}`}>
+            {isFault
+              ? `\u26a0 WHEEL SLIP  divergence: ${divergence.toFixed(3)}m`
+              : `\u2713 NOMINAL  divergence: ${divergence.toFixed(3)}m`}
+          </div>
+        )}
+
+        {verdict && !running && (
+          <div className={`font-mono text-center py-1 border ${verdict.status === 'fault' ? 'border-term-red text-term-red' : 'border-term-green text-term-green'}`}>
+            {verdict.status === 'fault' ? '\u26a0 FAULT' : '\u2713 NOMINAL'} {'\u2014'} {verdict.msg}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // -- main page --
 
 function AgentPage() {
@@ -1558,15 +2353,18 @@ function AgentPage() {
 
       {/* cameras + info */}
       <div className="flex flex-wrap gap-3">
-        <div className="tui-panel bg-card flex flex-col w-[400px] shrink-0">
-          <PanelHeader title="MAIN CAMERA" right="/main_camera/left" />
-          <div className="aspect-video bg-black overflow-hidden">
-            {url ? (
-              <ImageFeed url={url} topic="/mars/main_camera/left/image_raw/compressed" label="MAIN" depthTopic="/mars/main_camera/depth/image_rect_raw" />
-            ) : (
-              <SimulatedFeed agent={agent} />
-            )}
+        <div className="flex flex-col gap-3 w-[400px] shrink-0">
+          <div className="tui-panel bg-card flex flex-col">
+            <PanelHeader title="MAIN CAMERA" right="/main_camera/left" />
+            <div className="aspect-video bg-black overflow-hidden">
+              {url ? (
+                <ImageFeed url={url} topic="/mars/main_camera/left/image_raw/compressed" label="MAIN" depthTopic="/mars/main_camera/depth/image_rect_raw" />
+              ) : (
+                <SimulatedFeed agent={agent} />
+              )}
+            </div>
           </div>
+          {url && <DepthCloudPanel url={url} />}
         </div>
 
         <div className="tui-panel bg-card flex flex-col w-[400px] shrink-0">
@@ -1598,8 +2396,31 @@ function AgentPage() {
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
           <RobotPosePanel url={url} />
           <DrivePanel url={url} />
+          <SysStatsPanel url={url} />
+          <BatteryPanel url={url} />
+          <ImuAccelPanel url={url} />
+          <OdomFdirPanel url={url} />
+          <CmdVelPanel url={url} />
           <SkillStatusPanel url={url} />
           <TTSPanel url={url} />
+          <TTSControlPanel url={url} />
+          <SkillsPanel url={url} />
+        </div>
+      )}
+
+      {/* lidar diagnostics */}
+      {url && (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+          <LidarVisionCheck url={url} />
+        </div>
+      )}
+
+      {/* orchestrator controls */}
+      {url && (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+          <GotoPanel url={url} />
+          <SkillUpdatePanel url={url} />
+          <InputConfigPanel url={url} />
         </div>
       )}
 
@@ -1609,7 +2430,7 @@ function AgentPage() {
       {/* location track */}
       {url && (
         <div className="tui-panel bg-card flex flex-col" style={{ maxWidth: 300 }}>
-          <PanelHeader title="LOCATION TRACK" right="/odom" />
+          <PanelHeader title="ENCODER ODOM" right="map frame /amcl_pose" />
           <div className="p-2 aspect-square max-h-64">
             <LiveLocationTrack url={url} />
           </div>

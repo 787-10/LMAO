@@ -21,6 +21,10 @@ interface Connection {
 
 const connections = new Map<string, Connection>()
 
+// action_result listeners keyed by action id
+type ActionResultListener = (result: Record<string, unknown>) => void
+const actionListeners = new Map<string, ActionResultListener>()
+
 function sendAllSubscriptions(conn: Connection) {
   if (!conn.ws || conn.ws.readyState !== WebSocket.OPEN) return
   for (const sub of conn.subscriptions.values()) {
@@ -78,6 +82,10 @@ function getOrCreateConnection(url: string): Connection {
         const msg = JSON.parse(raw)
         if (msg.op === 'publish' && msg.topic) {
           for (const fn of conn!.listeners) fn(msg.topic, msg.msg)
+        } else if (msg.op === 'action_result') {
+          const id = msg.id as string
+          const cb = actionListeners.get(id)
+          if (cb) { actionListeners.delete(id); cb(msg.values as Record<string, unknown>) }
         } else {
           console.log('[rosbridge] non-publish msg:', msg.op, msg.id ?? '', msg.msg ?? '')
         }
@@ -151,6 +159,33 @@ export function publishRosbridge(
     advertised.add(key)
   }
   conn.ws.send(JSON.stringify({ op: 'publish', topic, msg }))
+}
+
+let _actionMsgId = 0
+
+export function sendActionGoal(
+  url: string,
+  skillType: string,
+  onResult: (ok: boolean, message: string) => void,
+  inputs: Record<string, unknown> = {},
+): void {
+  const conn = connections.get(url)
+  if (!conn?.ws || conn.ws.readyState !== WebSocket.OPEN) {
+    onResult(false, 'not connected')
+    return
+  }
+  const id = `act${_actionMsgId++}`
+  actionListeners.set(id, (values) => {
+    const ok = values?.success === true || values?.success_type === 'success'
+    onResult(ok as boolean, (values?.message as string) ?? '')
+  })
+  conn.ws.send(JSON.stringify({
+    op: 'send_action_goal',
+    id,
+    action: '/execute_skill',
+    action_type: 'brain_messages/action/ExecuteSkill',
+    args: { skill_type: skillType, inputs: JSON.stringify(inputs).replace(/:(-?\d+)([,}])/g, ':$1.0$2') },
+  }))
 }
 
 function releaseConnection(url: string) {
