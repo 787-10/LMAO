@@ -58,8 +58,12 @@ TOOLS = [
     {
         "name": "navigate_robot",
         "description": (
-            "Send a robot to a specific map position.  Shortcut for assigning "
-            "a navigate task and triggering Nav2."
+            "Send a robot to a specific map position. Shortcut for assigning "
+            "a navigate task and triggering Nav2. PREFER omitting theta unless "
+            "you specifically need the rover to end facing a particular "
+            "direction — the orchestrator will default to the rover's current "
+            "yaw (matches the dashboard's waypoint click). Passing theta=0 "
+            "forces the planner to end facing East and is frequently rejected."
         ),
         "input_schema": {
             "type": "object",
@@ -67,15 +71,19 @@ TOOLS = [
                 "robot_name": {"type": "string"},
                 "x": {
                     "type": "number",
-                    "description": "Target X coordinate in meters.",
+                    "description": "Target X coordinate in meters (map frame).",
                 },
                 "y": {
                     "type": "number",
-                    "description": "Target Y coordinate in meters.",
+                    "description": "Target Y coordinate in meters (map frame).",
                 },
                 "theta": {
                     "type": "number",
-                    "description": "Target heading in radians (default 0).",
+                    "description": (
+                        "Optional target heading in radians. Omit to keep the "
+                        "rover's current yaw — this is almost always what you "
+                        "want."
+                    ),
                 },
             },
             "required": ["robot_name", "x", "y"],

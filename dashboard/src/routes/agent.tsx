@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoute } from '@tanstack/react-router'
 import { rootRoute } from './__root'
 import {
@@ -39,11 +39,11 @@ function formatNum(n: unknown, decimals = 3): string {
   return '--'
 }
 
-function PanelHeader({ title, right }: { title: string; right?: string }) {
+function PanelHeader({ title, right, rightEl }: { title: string; right?: string; rightEl?: React.ReactNode }) {
   return (
     <div className="border-b px-2 py-1 text-xs text-muted-foreground flex items-center justify-between">
       <span><span className="text-border mr-1">&#9552;</span>{title}<span className="text-border ml-1">&#9552;</span></span>
-      {right && <span>{right}<span className="text-border ml-1">&#9552;</span></span>}
+      {rightEl ?? (right && <span>{right}<span className="text-border ml-1">&#9552;</span></span>)}
     </div>
   )
 }
@@ -363,16 +363,14 @@ function Robot3D({ yaw, linX }: { yaw: number; linX: number; angZ: number }) {
   )
 }
 
-function RobotPosePanel({ url }: { url: string }) {
+function PoseOdomReadout({ url }: { url: string }) {
   const { data: poseData } = useRosbridgeTopic<{
     pose?: { pose?: { position?: { x: number; y: number; z: number }; orientation?: { x: number; y: number; z: number; w: number } } }
   }>(url, '/amcl_pose', 'geometry_msgs/msg/PoseWithCovarianceStamped', 500)
-
   const { data: odomData } = useRosbridgeTopic<{
     twist?: { twist?: { linear?: { x: number; y: number }; angular?: { z: number } } }
     pose?: { pose?: { position?: { x: number; y: number } } }
   }>(url, '/odom', 'nav_msgs/msg/Odometry', 200)
-
   const { data: cmdVelData } = useRosbridgeTopic<{
     linear?: { x: number; y: number; z: number }
     angular?: { x: number; y: number; z: number }
@@ -382,133 +380,41 @@ function RobotPosePanel({ url }: { url: string }) {
   const ori = poseData?.pose?.pose?.orientation ?? { x: 0, y: 0, z: 0, w: 1 }
   const lin = odomData?.twist?.twist?.linear ?? { x: 0, y: 0 }
   const ang = odomData?.twist?.twist?.angular ?? { z: 0 }
-  const odomPos = odomData?.pose?.pose?.position
-
   const yaw = quatToYaw(ori)
 
-  // viewBox dimensions
-  const CX = 200, CY = 140
-  // map +-5m world range to +-96 iso units (grid 20% larger)
-  const S = 19.2
-  const gx = Math.max(-5, Math.min(5, pos.x)) * S
-  const gy = Math.max(-5, Math.min(5, pos.y)) * S
-  const gz = Math.max(-2, Math.min(2, pos.z)) * 12
-
-  const projected = isoProject(gx, gy, gz)
-  const robotX = CX + projected.sx
-  const robotY = CY + projected.sy
-
-  // grid spans +-96 iso units
-  const GRID = 96
-  const LINES = 9
+  const Col = ({ label, children }: { label: string; children: React.ReactNode }) => (
+    <div className="flex-1 min-w-[90px] flex flex-col gap-0.5">
+      <div className="text-muted-foreground text-[9px] border-b pb-0.5">{label}</div>
+      <div className="text-[10px] font-mono space-y-0.5">{children}</div>
+    </div>
+  )
+  const Row = ({ label, value, color }: { label: string; value: string; color?: string }) => (
+    <div className="flex justify-between gap-1">
+      <span className="text-muted-foreground">{label}</span>
+      <span className={color ?? 'text-foreground'}>{value}</span>
+    </div>
+  )
 
   return (
-    <div className="tui-panel bg-card">
-      <PanelHeader title="POSE + ODOM" />
-      <div className="flex">
-        <div className="flex-1 p-2" style={{ maxHeight: 320 }}>
-          <svg viewBox="0 0 400 280" className="w-full h-full" preserveAspectRatio="xMidYMid meet" style={{ maxHeight: 300 }}>
-            <defs>
-              <marker id="arrowHead" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
-                <path d="M0,0 L6,2 L0,4" fill="#5fafaf" opacity="0.7" />
-              </marker>
-            </defs>
-
-            {/* isometric ground grid */}
-            {Array.from({ length: LINES }, (_, i) => {
-              const v = ((i - (LINES - 1) / 2) / ((LINES - 1) / 2)) * GRID
-              const a = isoProject(v, -GRID, 0)
-              const b = isoProject(v, GRID, 0)
-              return <line key={`gx${i}`} x1={CX + a.sx} y1={CY + a.sy} x2={CX + b.sx} y2={CY + b.sy}
-                stroke="#5f87af" strokeWidth={0.4} opacity={i === (LINES - 1) / 2 ? 0.35 : 0.15} />
-            })}
-            {Array.from({ length: LINES }, (_, i) => {
-              const v = ((i - (LINES - 1) / 2) / ((LINES - 1) / 2)) * GRID
-              const a = isoProject(-GRID, v, 0)
-              const b = isoProject(GRID, v, 0)
-              return <line key={`gy${i}`} x1={CX + a.sx} y1={CY + a.sy} x2={CX + b.sx} y2={CY + b.sy}
-                stroke="#5f87af" strokeWidth={0.4} opacity={i === (LINES - 1) / 2 ? 0.35 : 0.15} />
-            })}
-
-            {/* origin axes */}
-            {(() => {
-              const o = isoProject(0, 0, 0)
-              const ax = isoProject(20, 0, 0)
-              const ay = isoProject(0, 20, 0)
-              const az = isoProject(0, 0, 20)
-              return (
-                <>
-                  <line x1={CX + o.sx} y1={CY + o.sy} x2={CX + ax.sx} y2={CY + ax.sy} stroke="#d75f5f" strokeWidth={1} opacity={0.5} />
-                  <text x={CX + ax.sx + 4} y={CY + ax.sy + 1} fontSize={8} fill="#d75f5f" opacity={0.6} fontFamily="monospace">X</text>
-                  <line x1={CX + o.sx} y1={CY + o.sy} x2={CX + ay.sx} y2={CY + ay.sy} stroke="#5faf5f" strokeWidth={1} opacity={0.5} />
-                  <text x={CX + ay.sx - 10} y={CY + ay.sy + 1} fontSize={8} fill="#5faf5f" opacity={0.6} fontFamily="monospace">Y</text>
-                  <line x1={CX + o.sx} y1={CY + o.sy} x2={CX + az.sx} y2={CY + az.sy} stroke="#5fafaf" strokeWidth={1} opacity={0.5} />
-                  <text x={CX + az.sx + 4} y={CY + az.sy + 1} fontSize={8} fill="#5fafaf" opacity={0.6} fontFamily="monospace">Z</text>
-                </>
-              )
-            })()}
-
-            {/* ground shadow */}
-            {(() => {
-              const sh = isoProject(gx, gy, 0)
-              return <ellipse cx={CX + sh.sx} cy={CY + sh.sy} rx={8} ry={3} fill="#5f87af" opacity={0.08} />
-            })()}
-
-            {/* heading line on ground plane */}
-            {(() => {
-              const from = isoProject(gx, gy, 0)
-              const to = isoProject(gx + Math.cos(yaw) * 20, gy + Math.sin(yaw) * 20, 0)
-              return <line x1={CX + from.sx} y1={CY + from.sy} x2={CX + to.sx} y2={CY + to.sy}
-                stroke="#afaf5f" strokeWidth={0.8} strokeDasharray="4 3" opacity={0.3} />
-            })()}
-
-            {/* velocity vector */}
-            {Math.abs(lin.x) > 0.01 && (() => {
-              const from = isoProject(gx, gy, 0)
-              const to = isoProject(gx + Math.cos(yaw) * lin.x * 30, gy + Math.sin(yaw) * lin.x * 30, 0)
-              return <line x1={CX + from.sx} y1={CY + from.sy} x2={CX + to.sx} y2={CY + to.sy}
-                stroke="#5faf5f" strokeWidth={1.2} opacity={0.7} markerEnd="url(#arrowHead)" />
-            })()}
-
-            {/* 3D robot */}
-            <g transform={`translate(${robotX}, ${robotY})`}>
-              <Robot3D yaw={yaw} linX={lin.x} angZ={ang.z} />
-            </g>
-
-            {/* position label */}
-            <text x={robotX} y={robotY + 18} fontSize={8} fill="#5fafaf" textAnchor="middle" fontFamily="monospace" opacity={0.6}>
-              ({formatNum(pos.x, 2)}, {formatNum(pos.y, 2)}, {formatNum(pos.z, 2)})
-            </text>
-          </svg>
-        </div>
-
-        {/* telemetry readout */}
-        <div className="w-36 border-l p-2 text-xs space-y-1">
-          <div className="text-muted-foreground text-[10px] border-b pb-1 mb-1">POSE /amcl_pose</div>
-          <TelemetryRow label="x" value={formatNum(pos.x)} color="text-term-cyan" />
-          <TelemetryRow label="y" value={formatNum(pos.y)} color="text-term-cyan" />
-          <TelemetryRow label="z" value={formatNum(pos.z)} color="text-term-cyan" />
-          <TelemetryRow label="yaw" value={formatNum(yaw * 180 / Math.PI, 1) + '\u00b0'} color="text-term-yellow" />
-          <div className="border-t pt-1 mt-1" />
-          <div className="text-muted-foreground text-[10px] border-b pb-1 mb-1">ODOM /odom</div>
-          {odomPos && <>
-            <TelemetryRow label="pos.x" value={formatNum(odomPos.x)} />
-            <TelemetryRow label="pos.y" value={formatNum(odomPos.y)} />
-          </>}
-          <TelemetryRow label="lin.x" value={formatNum(lin.x)} color="text-term-green" />
-          <TelemetryRow label="lin.y" value={formatNum(lin.y)} color="text-term-green" />
-          <TelemetryRow label="ang.z" value={formatNum(ang.z)} color="text-term-yellow" />
-          <div className="border-t pt-1 mt-1" />
-          <div className="text-muted-foreground text-[10px] border-b pb-1 mb-1">CMD_VEL</div>
-          <TelemetryRow label="lin.x" value={formatNum(cmdVelData?.linear?.x)} color="text-term-green" />
-          <TelemetryRow label="lin.y" value={formatNum(cmdVelData?.linear?.y)} color="text-term-green" />
-          <TelemetryRow label="ang.z" value={formatNum(cmdVelData?.angular?.z)} color="text-term-yellow" />
-        </div>
-      </div>
+    <div className="flex flex-wrap gap-3 border-t pt-2 px-2 pb-2 text-xs">
+      <Col label="POSE /amcl_pose">
+        <Row label="x" value={formatNum(pos.x)} color="text-term-cyan" />
+        <Row label="y" value={formatNum(pos.y)} color="text-term-cyan" />
+        <Row label="yaw" value={formatNum(yaw * 180 / Math.PI, 1) + '\u00b0'} color="text-term-yellow" />
+      </Col>
+      <Col label="ODOM /odom">
+        <Row label="lin.x" value={formatNum(lin.x)} color="text-term-green" />
+        <Row label="lin.y" value={formatNum(lin.y)} color="text-term-green" />
+        <Row label="ang.z" value={formatNum(ang.z)} color="text-term-yellow" />
+      </Col>
+      <Col label="CMD_VEL">
+        <Row label="lin.x" value={formatNum(cmdVelData?.linear?.x)} color="text-term-green" />
+        <Row label="lin.y" value={formatNum(cmdVelData?.linear?.y)} color="text-term-green" />
+        <Row label="ang.z" value={formatNum(cmdVelData?.angular?.z)} color="text-term-yellow" />
+      </Col>
     </div>
   )
 }
-
 
 
 interface HeadState {
@@ -604,6 +510,121 @@ interface AvailableSkillsMsg { skills: SkillMsg[] }
 
 interface SkillResult { ok: boolean; message: string; ts: string }
 
+type AlertKind = 'imu' | 'lidar' | 'critical'
+interface CriticalAlert {
+  id: string
+  kind: AlertKind
+  source: string
+  sourceLabel: string
+  message: string
+  ts: string
+}
+
+const CRITICAL_PATTERNS: { kind: AlertKind; re: RegExp }[] = [
+  { kind: 'imu', re: /\bimu\b/i },
+  { kind: 'lidar', re: /\b(lidar|laser[\s_-]?scan|scan)\b/i },
+  { kind: 'critical', re: /\b(critical|fatal|hardware[\s_-]?fail|sensor[\s_-]?fail|emergenc)/i },
+]
+
+function detectCriticalKind(message: string, ok: boolean): AlertKind | null {
+  if (ok) return null
+  for (const p of CRITICAL_PATTERNS) {
+    if (p.re.test(message)) return p.kind
+  }
+  return null
+}
+
+// -- stream health monitor --
+// Watches IMU + LIDAR topics directly; raises alerts on staleness or invalid data.
+// Alerts auto-deduplicate: once fired for a stream, don't re-fire until the stream recovers.
+
+const IMU_STALE_MS = 3000
+const LIDAR_STALE_MS = 3000
+const STREAM_CHECK_INTERVAL_MS = 1000
+
+function useStreamHealthAlerts(
+  url: string,
+  onAlert: (a: Omit<CriticalAlert, 'id' | 'ts'>) => void,
+) {
+  const imu = useRosbridgeTopic<{ data?: string }>(url, '/robot/imu_odom', 'std_msgs/msg/String', 0)
+  const scan = useRosbridgeTopic<LaserScanMsg>(url, '/scan', 'sensor_msgs/msg/LaserScan', 500)
+
+  const imuLast = useRef(0)
+  const scanLast = useRef(0)
+  const imuSeen = useRef(false)
+  const scanSeen = useRef(false)
+  const imuAlerted = useRef(false)
+  const scanAlerted = useRef(false)
+
+  useEffect(() => {
+    const raw = imu.data?.data
+    if (raw === undefined) return
+    let valid = false
+    let detail = ''
+    try {
+      const p = JSON.parse(raw)
+      const fields = ['xacc', 'yacc', 'zacc', 'pitch', 'roll', 'yaw']
+      const bad = fields.filter(f => typeof p[f] !== 'number' || !isFinite(p[f]))
+      if (bad.length === 0) valid = true
+      else detail = `invalid fields: ${bad.join(',')}`
+    } catch (e) {
+      detail = `parse failure: ${(e as Error).message}`
+    }
+    if (valid) {
+      imuLast.current = Date.now()
+      imuSeen.current = true
+      imuAlerted.current = false
+    } else if (!imuAlerted.current) {
+      imuAlerted.current = true
+      onAlert({ kind: 'imu', source: '/robot/imu_odom', sourceLabel: 'IMU stream', message: `IMU data invalid (${detail})` })
+    }
+  }, [imu.data, onAlert])
+
+  useEffect(() => {
+    const d = scan.data
+    if (!d) return
+    const ranges = d.ranges
+    const hasValid = Array.isArray(ranges) && ranges.length > 0 && ranges.some(r => isFinite(r) && r >= d.range_min && r <= d.range_max)
+    if (hasValid) {
+      scanLast.current = Date.now()
+      scanSeen.current = true
+      scanAlerted.current = false
+    } else if (!scanAlerted.current) {
+      scanAlerted.current = true
+      const n = ranges?.length ?? 0
+      onAlert({ kind: 'lidar', source: '/scan', sourceLabel: 'LIDAR scan', message: `LIDAR scan invalid (${n} ranges, none in [${d.range_min},${d.range_max}])` })
+    }
+  }, [scan.data, onAlert])
+
+  // reset all health state when url changes
+  useEffect(() => {
+    imuLast.current = 0
+    scanLast.current = 0
+    imuSeen.current = false
+    scanSeen.current = false
+    imuAlerted.current = false
+    scanAlerted.current = false
+  }, [url])
+
+  useEffect(() => {
+    if (!url) return
+    const i = setInterval(() => {
+      const now = Date.now()
+      if (imuSeen.current && !imuAlerted.current && now - imuLast.current > IMU_STALE_MS) {
+        imuAlerted.current = true
+        const age = ((now - imuLast.current) / 1000).toFixed(1)
+        onAlert({ kind: 'imu', source: '/robot/imu_odom', sourceLabel: 'IMU stream', message: `IMU stream stale (no message for ${age}s)` })
+      }
+      if (scanSeen.current && !scanAlerted.current && now - scanLast.current > LIDAR_STALE_MS) {
+        scanAlerted.current = true
+        const age = ((now - scanLast.current) / 1000).toFixed(1)
+        onAlert({ kind: 'lidar', source: '/scan', sourceLabel: 'LIDAR scan', message: `LIDAR scan stream stale (no message for ${age}s)` })
+      }
+    }, STREAM_CHECK_INTERVAL_MS)
+    return () => clearInterval(i)
+  }, [url, onAlert])
+}
+
 // Skills that require inline parameter inputs before running
 const SKILL_PARAMS: Record<string, { label: string; key: string; placeholder: string }[]> = {
   'navigate_to_position': [
@@ -620,7 +641,7 @@ function skillParamKey(id: string): string | null {
   return null
 }
 
-function SkillsPanel({ url }: { url: string }) {
+function SkillsPanel({ url, onAlert }: { url: string; onAlert?: (a: Omit<CriticalAlert, 'id' | 'ts'>) => void }) {
   const { data } = useRosbridgeTopic<AvailableSkillsMsg>(
     url, '/brain/available_skills', 'brain_messages/msg/AvailableSkills',
   )
@@ -631,7 +652,6 @@ function SkillsPanel({ url }: { url: string }) {
   const skills = (data?.skills ?? []).sort((a, b) =>
     (a.name ?? '').toLowerCase().localeCompare((b.name ?? '').toLowerCase()),
   )
-  console.log(skills)
 
   function setParam(skillId: string, key: string, value: string) {
     setParams(p => ({ ...p, [skillId]: { ...p[skillId], [key]: value } }))
@@ -653,7 +673,19 @@ function SkillsPanel({ url }: { url: string }) {
     }
 
     sendActionGoal(url, skillId, (ok, message) => {
-      setResults((r) => ({ ...r, [skillId]: { ok, message, ts: new Date().toLocaleTimeString() } }))
+      const kind = detectCriticalKind(message, ok)
+      if (kind && onAlert) {
+        const sk = skills.find(s => (s.id ?? s.skill_type) === skillId)
+        onAlert({
+          kind,
+          source: skillId,
+          sourceLabel: `skill: ${sk?.display_name ?? sk?.name ?? skillId}`,
+          message,
+        })
+        setResults((r) => ({ ...r, [skillId]: { ok, message: `${kind.toUpperCase()} fault — see alerts`, ts: new Date().toLocaleTimeString() } }))
+      } else {
+        setResults((r) => ({ ...r, [skillId]: { ok, message, ts: new Date().toLocaleTimeString() } }))
+      }
       setRunning(null)
     }, inputs)
   }
@@ -661,7 +693,7 @@ function SkillsPanel({ url }: { url: string }) {
   const inputCls = 'w-14 bg-background border border-border px-1 py-0.5 text-[10px] font-mono focus:outline-none focus:border-term-cyan'
 
   return (
-    <div className="tui-panel bg-card flex flex-col col-span-2">
+    <div className="tui-panel bg-card flex flex-col">
       <PanelHeader title="SKILLS" right={skills.length ? `${skills.length} available` : 'loading…'} />
       <div className="flex flex-col divide-y text-xs max-h-128 overflow-y-auto">
         {skills.length === 0 && (
@@ -676,7 +708,7 @@ function SkillsPanel({ url }: { url: string }) {
           const fields = paramKey ? SKILL_PARAMS[paramKey] : null
 
           return (
-            <div key={id} className="px-3 py-1.5 space-y-1">
+            <div key={id} className="px-3 py-1.5 space-y-1 hover:bg-accent/50">
               <div className="flex items-center gap-2">
                 <div className="flex-1 min-w-0">
                   <div className="text-foreground truncate">{name}</div>
@@ -711,6 +743,56 @@ function SkillsPanel({ url }: { url: string }) {
                   {res.ts} — {res.message}
                 </div>
               )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+
+const ALERT_STYLES: Record<AlertKind, { label: string; cls: string }> = {
+  imu: { label: 'IMU FAULT', cls: 'border-term-red text-term-red' },
+  lidar: { label: 'LIDAR FAULT', cls: 'border-term-red text-term-red' },
+  critical: { label: 'CRITICAL', cls: 'border-term-red text-term-red' },
+}
+
+function AlertsPanel({ alerts, onDismiss, onClear }: {
+  alerts: CriticalAlert[]
+  onDismiss: (id: string) => void
+  onClear: () => void
+}) {
+  if (alerts.length === 0) return null
+  return (
+    <div className="tui-panel bg-card border-term-red">
+      <div className="border-b border-term-red/60 px-2 py-1 text-xs flex items-center justify-between">
+        <span className="text-term-red font-bold">
+          <span className="text-border mr-1">&#9552;</span>
+          ALERTS
+          <span className="text-border ml-1">&#9552;</span>
+          <span className="ml-2 status-live">●</span>
+          <span className="ml-1">{alerts.length} active</span>
+        </span>
+        <button onClick={onClear} className="text-[10px] text-muted-foreground hover:text-foreground">clear all</button>
+      </div>
+      <div className="divide-y text-xs max-h-40 overflow-y-auto">
+        {alerts.map(a => {
+          const style = ALERT_STYLES[a.kind]
+          return (
+            <div key={a.id} className="flex items-start gap-2 px-2 py-1.5">
+              <span className="text-muted-foreground shrink-0">{a.ts}</span>
+              <span className={`shrink-0 border px-1 font-bold ${style.cls}`}>{style.label}</span>
+              <div className="flex-1 min-w-0">
+                <div className="text-foreground break-words">{a.message}</div>
+                <div className="text-[10px] text-muted-foreground truncate">{a.sourceLabel} ({a.source})</div>
+              </div>
+              <button
+                onClick={() => onDismiss(a.id)}
+                className="shrink-0 text-[10px] text-muted-foreground hover:text-term-red"
+              >
+                dismiss
+              </button>
             </div>
           )
         })}
@@ -912,7 +994,7 @@ function DrivePanel({ url }: { url: string }) {
   const ang = (k.a ? 1 : 0) - (k.d ? 1 : 0)
 
   return (
-    <div className="tui-panel bg-card">
+    <div className="tui-panel bg-card flex flex-col">
       <PanelHeader title="DRIVE" />
       <div className="p-4 flex flex-col items-center justify-center gap-3">
         <button
@@ -950,6 +1032,9 @@ function DrivePanel({ url }: { url: string }) {
         <div className="text-[10px] text-muted-foreground">
           lin:{(lin * LIN_SPEED).toFixed(1)} ang:{(ang * ANG_SPEED).toFixed(1)}
         </div>
+      </div>
+      <div className="mt-auto">
+        <PoseOdomReadout url={url} />
       </div>
     </div>
   )
@@ -1175,7 +1260,7 @@ interface LaserScanMsg {
   ranges: number[]
 }
 
-function LidarPanel({ url, paused }: { url: string; paused: boolean }) {
+function LidarPanel({ url, paused, onTogglePause }: { url: string; paused: boolean; onTogglePause?: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [viewRange, setViewRange] = useState<number>(2)
   const { data } = useRosbridgeTopic<LaserScanMsg>(url, paused ? '' : '/scan', 'sensor_msgs/msg/LaserScan', 500)
@@ -1186,8 +1271,12 @@ function LidarPanel({ url, paused }: { url: string; paused: boolean }) {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    const W = canvas.width
-    const H = canvas.height
+    const LOGICAL = 300
+    const k = canvas.width / LOGICAL
+    ctx.setTransform(k, 0, 0, k, 0, 0)
+
+    const W = LOGICAL
+    const H = LOGICAL
     const cx = W / 2
     const cy = H / 2
 
@@ -1274,10 +1363,10 @@ function LidarPanel({ url, paused }: { url: string; paused: boolean }) {
   }, [data, viewRange])
 
   return (
-    <div className="tui-panel bg-card w-[310px] shrink-0">
+    <div className="tui-panel bg-card flex flex-col w-full">
       <PanelHeader title="LIDAR" right={`${viewRange}m /scan`} />
-      <div className="p-1">
-        <canvas ref={canvasRef} width={298} height={298} className="w-full" style={{ aspectRatio: '1' }} />
+      <div className="p-1 flex-1">
+        <canvas ref={canvasRef} width={900} height={900} className="w-full" style={{ aspectRatio: '1' }} />
       </div>
       <div className="border-t px-2 py-1 flex gap-1 text-[10px]">
         {[2, 4, 8].map((r) => (
@@ -1289,6 +1378,14 @@ function LidarPanel({ url, paused }: { url: string; paused: boolean }) {
             {r}m
           </button>
         ))}
+        {onTogglePause && (
+          <button
+            onClick={onTogglePause}
+            className={`ml-auto px-2 py-0.5 ${paused ? 'bg-term-yellow/10 text-term-yellow' : 'bg-card text-muted-foreground hover:text-foreground'}`}
+          >
+            {paused ? '> resume' : '|| pause'}
+          </button>
+        )}
       </div>
     </div>
   )
@@ -1319,6 +1416,10 @@ function LiveLocationTrack({ url }: { url: string }) {
   const { data: amcl } = useRosbridgeTopic<Record<string, unknown>>(url, '/amcl_pose', 'geometry_msgs/msg/PoseWithCovarianceStamped', 200)
   const trailRef = useRef<{ x: number; y: number }[]>([])
   const [, setTick] = useState(0)
+  const [waypointMode, setWaypointMode] = useState(false)
+  const [waypoint, setWaypoint] = useState<{ x: number; y: number } | null>(null)
+  const [navStatus, setNavStatus] = useState<string | null>(null)
+  const svgRef = useRef<SVGSVGElement>(null)
 
   const poseData = amcl as { pose?: { pose?: { position?: { x: number; y: number }; orientation?: { x: number; y: number; z: number; w: number } } } } | null
   const rawPos = poseData?.pose?.pose?.position
@@ -1344,6 +1445,43 @@ function LiveLocationTrack({ url }: { url: string }) {
     sy: 50 - wy * scale,   // flip Y
   })
 
+  function handleGridClick(e: React.MouseEvent<SVGSVGElement>) {
+    if (!waypointMode) return
+    const svg = svgRef.current
+    if (!svg) return
+    const pt = svg.createSVGPoint()
+    pt.x = e.clientX
+    pt.y = e.clientY
+    const ctm = svg.getScreenCTM()
+    if (!ctm) return
+    const svgPt = pt.matrixTransform(ctm.inverse())
+    // svgPt in 0..100 coords; convert back to world
+    const wx = (svgPt.x - 50) / scale
+    const wy = -(svgPt.y - 50) / scale   // flip Y back
+    setWaypoint({ x: wx, y: wy })
+    setNavStatus('sending…')
+    // match orchestrator: theta = heading from current pos to goal
+    // (atan2(dy, dx)). if we have no pose yet, theta=0. if goal equals
+    // current pos, keep current yaw.
+    let waypointTheta = 0
+    if (rx !== null && ry !== null) {
+      const dx = wx - rx
+      const dy = wy - ry
+      if (dx === 0 && dy === 0) {
+        waypointTheta = rawOri
+          ? Math.atan2(2 * (rawOri.w * rawOri.z + rawOri.x * rawOri.y), 1 - 2 * (rawOri.y ** 2 + rawOri.z ** 2))
+          : 0
+      } else {
+        waypointTheta = Math.atan2(dy, dx)
+      }
+    }
+    console.log('[waypoint] theta=', waypointTheta, 'from (', rx, ry, ') -> (', wx, wy, ')')
+    sendActionGoal(url, 'innate-os/navigate_to_position', (ok, message) => {
+      setNavStatus(ok ? 'arrived' : `failed: ${message || 'error'}`)
+      setTimeout(() => setNavStatus(null), 10000)
+    }, { x: wx, y: wy, theta: waypointTheta, local_frame: false })
+  }
+
   let yaw = 0
   if (rawOri) {
     const o = rawOri
@@ -1352,6 +1490,7 @@ function LiveLocationTrack({ url }: { url: string }) {
 
   const trail = trailRef.current
   const robotSvg = rx !== null ? toSvg(rx, ry!) : null
+  const waypointSvg = waypoint ? toSvg(waypoint.x, waypoint.y) : null
 
   // grid lines at integer meters relative to origin
   const gridLines = []
@@ -1374,30 +1513,71 @@ function LiveLocationTrack({ url }: { url: string }) {
   }
 
   return (
-    <svg viewBox="0 0 100 100" className="w-full h-full" preserveAspectRatio="xMidYMid meet">
-      {gridLines}
-      {/* trail */}
-      {trail.length > 1 && trail.slice(0, -1).map((p, i) => {
-        const { sx: x1, sy: y1 } = toSvg(p.x, p.y)
-        const { sx: x2, sy: y2 } = toSvg(trail[i + 1].x, trail[i + 1].y)
-        return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#5f87af" strokeWidth={1} opacity={0.2 + (i / trail.length) * 0.7} />
-      })}
-      {/* robot dot */}
-      {robotSvg ? <>
-        <circle cx={robotSvg.sx} cy={robotSvg.sy} r={3} fill="#5f87af" />
-        <line
-          x1={robotSvg.sx} y1={robotSvg.sy}
-          x2={robotSvg.sx + Math.cos(yaw) * 6}
-          y2={robotSvg.sy - Math.sin(yaw) * 6}
-          stroke="#7df" strokeWidth={1.5}
-        />
-        <text x={robotSvg.sx} y={robotSvg.sy - 4} fontSize={3.5} fill="#5f87af" textAnchor="middle" fontFamily="monospace">
-          ({rx!.toFixed(2)}, {ry!.toFixed(2)})
-        </text>
-      </> : (
-        <text x={50} y={50} fontSize={5} fill="#444" textAnchor="middle" fontFamily="monospace">no odom</text>
-      )}
-    </svg>
+    <div className="flex flex-col h-full">
+      <svg
+        ref={svgRef}
+        viewBox="0 0 100 100"
+        className="w-full flex-1"
+        preserveAspectRatio="xMidYMid meet"
+        onClick={handleGridClick}
+        style={{ cursor: waypointMode ? 'crosshair' : 'default' }}
+      >
+        {gridLines}
+        {/* trail */}
+        {trail.length > 1 && trail.slice(0, -1).map((p, i) => {
+          const { sx: x1, sy: y1 } = toSvg(p.x, p.y)
+          const { sx: x2, sy: y2 } = toSvg(trail[i + 1].x, trail[i + 1].y)
+          return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#5f87af" strokeWidth={1} opacity={0.2 + (i / trail.length) * 0.7} />
+        })}
+        {/* waypoint */}
+        {waypointSvg && (
+          <>
+            <circle cx={waypointSvg.sx} cy={waypointSvg.sy} r={3} fill="#d75f5f" />
+            <circle cx={waypointSvg.sx} cy={waypointSvg.sy} r={5} fill="none" stroke="#d75f5f" strokeWidth={0.5} opacity={0.5} />
+            <text x={waypointSvg.sx} y={waypointSvg.sy + 8} fontSize={3.5} fill="#d75f5f" textAnchor="middle" fontFamily="monospace">
+              ({waypoint!.x.toFixed(2)}, {waypoint!.y.toFixed(2)})
+            </text>
+          </>
+        )}
+        {/* robot dot */}
+        {robotSvg ? <>
+          <circle cx={robotSvg.sx} cy={robotSvg.sy} r={3} fill="#5f87af" />
+          <line
+            x1={robotSvg.sx} y1={robotSvg.sy}
+            x2={robotSvg.sx + Math.cos(yaw) * 6}
+            y2={robotSvg.sy - Math.sin(yaw) * 6}
+            stroke="#7df" strokeWidth={1.5}
+          />
+          <text x={robotSvg.sx} y={robotSvg.sy - 4} fontSize={3.5} fill="#5f87af" textAnchor="middle" fontFamily="monospace">
+            ({rx!.toFixed(2)}, {ry!.toFixed(2)})
+          </text>
+        </> : (
+          <text x={50} y={50} fontSize={5} fill="#444" textAnchor="middle" fontFamily="monospace">no odom</text>
+        )}
+      </svg>
+      <div className="border-t flex items-center gap-2 px-2 py-1 text-[10px]">
+        <button
+          onClick={() => setWaypointMode(m => !m)}
+          className={`px-2 py-0.5 ${waypointMode ? 'bg-term-red text-primary-foreground' : 'bg-primary text-primary-foreground hover:opacity-80'}`}
+        >
+          {waypointMode ? 'cancel' : 'set waypoint'}
+        </button>
+        {waypoint && (
+          <button
+            onClick={() => { setWaypoint(null); setNavStatus(null) }}
+            className="px-2 py-0.5 bg-secondary text-secondary-foreground hover:opacity-80"
+          >
+            clear
+          </button>
+        )}
+        {navStatus && (
+          <span className={navStatus.startsWith('failed') ? 'text-term-red' : navStatus === 'arrived' ? 'text-term-green' : 'text-term-yellow'}>
+            {navStatus}
+          </span>
+        )}
+        {!navStatus && waypointMode && <span className="text-muted-foreground">click grid to navigate</span>}
+      </div>
+    </div>
   )
 }
 
@@ -1408,9 +1588,10 @@ const LOG_OCC = 0.4
 const LOG_FREE = -0.12
 const LOG_CLAMP = 6
 
+// North-up map convention: world +x (forward) -> screen up, world +y (left) -> screen left.
 function worldToGrid(wx: number, wy: number, originX: number, originY: number): [number, number] {
-  const gx = Math.floor((wx - originX) / OCC_RES + OCC_SIZE / 2)
-  const gy = Math.floor((wy - originY) / OCC_RES + OCC_SIZE / 2)
+  const gx = Math.floor(OCC_SIZE / 2 - (wy - originY) / OCC_RES)
+  const gy = Math.floor(OCC_SIZE / 2 - (wx - originX) / OCC_RES)
   return [gx, gy]
 }
 
@@ -1420,12 +1601,20 @@ function inGrid(gx: number, gy: number): boolean {
 
 function LidarOccupancy({ url, paused }: { url: string; paused: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const offscreenRef = useRef<HTMLCanvasElement | null>(null)
   const gridRef = useRef<Float32Array>(new Float32Array(OCC_SIZE * OCC_SIZE))
   const originRef = useRef<{ x: number; y: number } | null>(null)
   const poseRef = useRef({ x: 0, y: 0, yaw: 0 })
   const frameRef = useRef(0)
   const pausedRef = useRef(false)
   pausedRef.current = paused
+
+  if (!offscreenRef.current) {
+    const tmp = document.createElement('canvas')
+    tmp.width = OCC_SIZE
+    tmp.height = OCC_SIZE
+    offscreenRef.current = tmp
+  }
 
   const { data: scanData } = useRosbridgeTopic<LaserScanMsg>(url, paused ? '' : '/scan', 'sensor_msgs/msg/LaserScan', 500)
   const { data: odomData } = useRosbridgeTopic<{
@@ -1490,14 +1679,18 @@ function LidarOccupancy({ url, paused }: { url: string; paused: boolean }) {
 
     frameRef.current++
 
-    // render -- 1:1 pixel mapping (OCC_SIZE === canvas size)
+    // render: grid to offscreen at OCC_SIZE, then scaled to main canvas; overlays in OCC_SIZE logical coords
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
+    const offscreen = offscreenRef.current
+    if (!offscreen) return
+    const tmpCtx = offscreen.getContext('2d')
+    if (!tmpCtx) return
 
     const S = OCC_SIZE
-    const imgData = ctx.createImageData(S, S)
+    const imgData = tmpCtx.createImageData(S, S)
 
     for (let i = 0; i < grid.length; i++) {
       const v = grid[i]
@@ -1516,24 +1709,30 @@ function LidarOccupancy({ url, paused }: { url: string; paused: boolean }) {
       imgData.data[i * 4 + 2] = cb
       imgData.data[i * 4 + 3] = 255
     }
-    ctx.putImageData(imgData, 0, 0)
+    tmpCtx.putImageData(imgData, 0, 0)
+
+    // scale to main canvas; overlays draw in OCC_SIZE logical coords
+    const k = canvas.width / OCC_SIZE
+    ctx.setTransform(k, 0, 0, k, 0, 0)
+    ctx.imageSmoothingEnabled = false
+    ctx.drawImage(offscreen, 0, 0)
 
     // robot position on map
     const [botGx, botGy] = worldToGrid(rx, ry, origin.x, origin.y)
 
-    // heading indicator
+    // heading indicator (north-up: +x forward = canvas up, +y left = canvas left)
     ctx.strokeStyle = 'rgba(95,175,95,0.6)'
     ctx.lineWidth = 1.5
     ctx.beginPath()
     ctx.moveTo(botGx, botGy)
-    ctx.lineTo(botGx + Math.cos(-yaw + Math.PI / 2) * 14, botGy - Math.sin(-yaw + Math.PI / 2) * 14)
+    ctx.lineTo(botGx - Math.sin(yaw) * 14, botGy - Math.cos(yaw) * 14)
     ctx.stroke()
 
     // robot triangle
     ctx.fillStyle = '#5f87af'
     ctx.save()
     ctx.translate(botGx, botGy)
-    ctx.rotate(-yaw + Math.PI / 2)
+    ctx.rotate(-yaw)
     ctx.beginPath()
     ctx.moveTo(0, -5)
     ctx.lineTo(-3, 4)
@@ -1544,36 +1743,16 @@ function LidarOccupancy({ url, paused }: { url: string; paused: boolean }) {
   }, [scanData])
 
   return (
-    <div className="tui-panel bg-card w-[310px] shrink-0">
+    <div className="tui-panel bg-card flex flex-col w-full">
       <PanelHeader title="LIDAR MAP" right={`${frameRef.current}`} />
-      <div className="p-1">
-        <canvas ref={canvasRef} width={OCC_SIZE} height={OCC_SIZE} className="w-full" style={{ aspectRatio: '1', imageRendering: 'pixelated' }} />
+      <div className="p-1 flex-1">
+        <canvas ref={canvasRef} width={OCC_SIZE * 3} height={OCC_SIZE * 3} className="w-full" style={{ aspectRatio: '1' }} />
       </div>
     </div>
   )
 }
 
-// -- lidar group with shared pause --
-
-function LidarGroup({ url }: { url: string }) {
-  const [paused, setPaused] = useState(false)
-  return (
-    <div className="flex items-stretch gap-0">
-      <LidarPanel url={url} paused={paused} />
-      <button
-        onClick={() => setPaused((p) => !p)}
-        className={`border-y px-2 text-xs flex items-center ${paused ? 'tui-hatch-dense bg-term-yellow/10 text-term-yellow' : 'tui-hatch-subtle bg-card text-muted-foreground hover:text-foreground'
-          }`}
-      >
-        {paused ? '>' : '||'}
-      </button>
-      <LidarOccupancy url={url} paused={paused} />
-    </div>
-  )
-}
-
-
-function SystemStatsPanel({ url }: { url: string }) {
+function SystemStatsBody({ url }: { url: string }) {
   const { data: sysData } = useRosbridgeTopic<{ data?: string }>(url, '/robot/sys_stats', 'std_msgs/msg/String', 2000)
   const { data: batData } = useRosbridgeTopic<{
     voltage?: number
@@ -1618,47 +1797,42 @@ function SystemStatsPanel({ url }: { url: string }) {
         : 'text-term-red'
 
   return (
-    <div className="tui-panel bg-card">
-      <PanelHeader title="SYSTEM STATS" right={batPct != null ? `bat ${batPct}%` : stats ? 'live' : 'no data'} />
-      <div className="p-2 text-xs space-y-2">
-        {/* battery */}
-        <div>
-          <div className="flex justify-between mb-0.5">
-            <span className="text-muted-foreground">BAT</span>
-            <span className={batPctColor}>{batPct != null ? `${batPct}%` : '--'}</span>
-          </div>
-          <div className="h-1.5 w-full bg-muted rounded-sm overflow-hidden">
-            <div className="h-full rounded-sm transition-all" style={{ width: `${batPct ?? 0}%`, backgroundColor: batBarColor }} />
-          </div>
+    <div className="text-xs space-y-2">
+      <div>
+        <div className="flex justify-between mb-0.5">
+          <span className="text-muted-foreground">BAT</span>
+          <span className={batPctColor}>{batPct != null ? `${batPct}%` : '--'}</span>
         </div>
-        {(voltage != null || current != null || (batTemp != null && batTemp > 0)) && (
-          <div className="flex gap-3 text-[10px]">
-            {voltage != null && <span className="text-muted-foreground">V <span className="text-foreground">{voltage.toFixed(2)}</span></span>}
-            {current != null && <span className="text-muted-foreground">A <span className="text-foreground">{current.toFixed(2)}</span></span>}
-            {batTemp != null && batTemp > 0 && <span className="text-muted-foreground">T <span className={batTemp > 50 ? 'text-term-red' : 'text-foreground'}>{batTemp.toFixed(1)}{'\u00b0'}C</span></span>}
-          </div>
-        )}
-
-        <div className="border-t my-1" />
-
-        {/* system */}
-        {stats ? <>
-          <div>
-            <div className="flex justify-between mb-0.5"><span className="text-muted-foreground">CPU</span><span className={cpuPct != null && cpuPct > 80 ? 'text-term-red' : 'text-term-green'}>{cpuPct != null ? `${cpuPct}%` : `load ${load1m?.toFixed(2) ?? '--'}`}</span></div>
-            {bar(cpuPct)}
-          </div>
-          <div>
-            <div className="flex justify-between mb-0.5"><span className="text-muted-foreground">GPU</span><span className={gpuPct != null && gpuPct > 80 ? 'text-term-red' : 'text-term-green'}>{gpuPct != null ? `${gpuPct}%` : '--'}</span></div>
-            {bar(gpuPct)}
-          </div>
-          <div>
-            <div className="flex justify-between mb-0.5"><span className="text-muted-foreground">RAM</span><span className="text-term-yellow">{ramPct != null ? `${ramPct}%` : '--'}</span></div>
-            {bar(ramPct, 85)}
-          </div>
-          {hottest && <TelemetryRow label="temp" value={`${hottest.temp_c}\u00b0C (${hottest.zone})`} color={hottest.temp_c > 70 ? 'text-term-red' : hottest.temp_c > 50 ? 'text-term-yellow' : 'text-muted-foreground'} />}
-          {powerMw != null && <TelemetryRow label="power" value={`${(powerMw / 1000).toFixed(1)} W`} />}
-        </> : <span className="text-muted-foreground">run sys_stats_pub.py on robot</span>}
+        <div className="h-1.5 w-full bg-muted rounded-sm overflow-hidden">
+          <div className="h-full rounded-sm transition-all" style={{ width: `${batPct ?? 0}%`, backgroundColor: batBarColor }} />
+        </div>
       </div>
+      {(voltage != null || current != null || (batTemp != null && batTemp > 0)) && (
+        <div className="flex gap-3 text-[10px]">
+          {voltage != null && <span className="text-muted-foreground">V <span className="text-foreground">{voltage.toFixed(2)}</span></span>}
+          {current != null && <span className="text-muted-foreground">A <span className="text-foreground">{current.toFixed(2)}</span></span>}
+          {batTemp != null && batTemp > 0 && <span className="text-muted-foreground">T <span className={batTemp > 50 ? 'text-term-red' : 'text-foreground'}>{batTemp.toFixed(1)}{'\u00b0'}C</span></span>}
+        </div>
+      )}
+
+      <div className="border-t my-1" />
+
+      {stats ? <>
+        <div>
+          <div className="flex justify-between mb-0.5"><span className="text-muted-foreground">CPU</span><span className={cpuPct != null && cpuPct > 80 ? 'text-term-red' : 'text-term-green'}>{cpuPct != null ? `${cpuPct}%` : `load ${load1m?.toFixed(2) ?? '--'}`}</span></div>
+          {bar(cpuPct)}
+        </div>
+        <div>
+          <div className="flex justify-between mb-0.5"><span className="text-muted-foreground">GPU</span><span className={gpuPct != null && gpuPct > 80 ? 'text-term-red' : 'text-term-green'}>{gpuPct != null ? `${gpuPct}%` : '--'}</span></div>
+          {bar(gpuPct)}
+        </div>
+        <div>
+          <div className="flex justify-between mb-0.5"><span className="text-muted-foreground">RAM</span><span className="text-term-yellow">{ramPct != null ? `${ramPct}%` : '--'}</span></div>
+          {bar(ramPct, 85)}
+        </div>
+        {hottest && <TelemetryRow label="temp" value={`${hottest.temp_c}\u00b0C (${hottest.zone})`} color={hottest.temp_c > 70 ? 'text-term-red' : hottest.temp_c > 50 ? 'text-term-yellow' : 'text-muted-foreground'} />}
+        {powerMw != null && <TelemetryRow label="power" value={`${(powerMw / 1000).toFixed(1)} W`} />}
+      </> : <span className="text-muted-foreground">run sys_stats_pub.py on robot</span>}
     </div>
   )
 }
@@ -1702,7 +1876,7 @@ function ImuAccelPanel({ url }: { url: string }) {
 
   return (
     <div className="tui-panel bg-card flex flex-col">
-      <PanelHeader title="IMU ACCEL" right={parsed ? 'live pixhawk' : 'run imu_odom_pub.py'} />
+      <PanelHeader title="IMU ACCEL" right={parsed ? 'live pixhawk' : 'run imu_odom_pub2.py'} />
       <div className="p-2 space-y-2 text-xs">
         {parsed ? <>
           <AccelBar val={xacc} color="#af5f5f" label="X (fwd)" />
@@ -1824,6 +1998,106 @@ function DepthCloudPanel({ url }: { url: string }) {
   )
 }
 
+// -- status bar --
+
+function BatteryIcon({ pct, color }: { pct: number | null; color: string }) {
+  const fill = pct ?? 0
+  return (
+    <svg width="22" height="12" viewBox="0 0 22 12" className="shrink-0">
+      <rect x="0.5" y="0.5" width="19" height="11" fill="none" stroke="currentColor" strokeWidth="1" className="text-muted-foreground" />
+      <rect x="20" y="3" width="2" height="6" fill="currentColor" className="text-muted-foreground" />
+      <rect x="2" y="2" width={Math.max(0, Math.min(16, (fill / 100) * 16))} height="8" fill={color} />
+    </svg>
+  )
+}
+
+function StatusBar({
+  agent,
+  url,
+  wsStatus,
+}: {
+  agent: { id: string; name: string; status: string }
+  url?: string
+  wsStatus: 'connecting' | 'connected' | 'disconnected'
+}) {
+  const { data: sysData } = useRosbridgeTopic<{ data?: string }>(url, '/robot/sys_stats', 'std_msgs/msg/String', 2000)
+  const { data: batData } = useRosbridgeTopic<{
+    voltage?: number
+    percentage?: number
+    current?: number
+    temperature?: number
+  }>(url, '/battery_state', 'sensor_msgs/msg/BatteryState', 1000)
+
+  const stats = (() => {
+    try { return sysData?.data ? JSON.parse(sysData.data) : null } catch { return null }
+  })()
+
+  const cpuPct: number | null = stats?.gpu?.cpu_avg_pct ?? null
+  const gpuPct: number | null = stats?.gpu?.gpu_pct ?? null
+  const ramPct: number | null = stats?.gpu?.ram_pct ?? stats?.memory?.used_pct ?? null
+  const hottest: { zone: string; temp_c: number } | null = stats?.thermal?.hottest ?? null
+
+  const batPct = batData?.percentage != null ? Math.round(batData.percentage * 100) : null
+  const voltage = batData?.voltage ?? null
+  const current = batData?.current ?? null
+
+  const batColor = batPct == null ? '#555'
+    : batPct > 60 ? '#5faf5f'
+      : batPct > 30 ? '#afaf5f'
+        : '#af5f5f'
+  const batTextColor = batPct == null ? 'text-muted-foreground'
+    : batPct > 60 ? 'text-term-green'
+      : batPct > 30 ? 'text-term-yellow'
+        : 'text-term-red'
+
+  const statusColor = agent.status === 'online' ? 'text-term-green' : agent.status === 'idle' ? 'text-term-yellow' : 'text-term-red'
+  const wsColor = wsStatus === 'connected' ? 'text-term-green' : wsStatus === 'disconnected' ? 'text-term-red' : 'text-term-yellow'
+
+  const pctColor = (v: number | null, danger = 80) =>
+    v == null ? 'text-muted-foreground' : v > danger ? 'text-term-red' : v > danger * 0.65 ? 'text-term-yellow' : 'text-term-green'
+
+  return (
+    <div className="tui-panel bg-card px-3 flex items-center gap-4 text-xs h-12 shrink-0 overflow-x-auto">
+      <div className="flex items-center gap-2 shrink-0">
+        <span className={`${statusColor} ${agent.status === 'online' ? 'status-live' : ''}`}>●</span>
+        <span className="font-bold text-foreground">{agent.name}</span>
+        <span className="text-muted-foreground">{agent.id}</span>
+        <span className={statusColor}>{agent.status}</span>
+      </div>
+
+      <div className="w-px h-5 bg-border shrink-0" />
+
+      <div className="flex items-center gap-2 shrink-0 w-96">
+        <span className={`${wsColor} ${wsStatus === 'connected' ? 'status-live' : ''}`}>●</span>
+        <span className={wsColor}>{wsStatus}</span>
+        {url && <span className="text-muted-foreground truncate max-w-[240px]">{url}</span>}
+      </div>
+
+      {url && <>
+        <div className="w-px h-5 bg-border shrink-0" />
+
+        <div className="flex items-center gap-2 shrink-0">
+          <BatteryIcon pct={batPct} color={batColor} />
+          <span className={batTextColor}>{batPct != null ? `${batPct}%` : '--'}</span>
+          {voltage != null && <span className="text-muted-foreground">{voltage.toFixed(1)}<span className="opacity-60">V</span></span>}
+          {current != null && <span className="text-muted-foreground">{current.toFixed(1)}<span className="opacity-60">A</span></span>}
+        </div>
+
+        <div className="w-px h-5 bg-border shrink-0" />
+
+        <div className="flex items-center gap-3 shrink-0">
+          <span className="text-muted-foreground">CPU <span className={pctColor(cpuPct)}>{cpuPct != null ? `${cpuPct}%` : '--'}</span></span>
+          <span className="text-muted-foreground">GPU <span className={pctColor(gpuPct)}>{gpuPct != null ? `${gpuPct}%` : '--'}</span></span>
+          <span className="text-muted-foreground">RAM <span className={pctColor(ramPct, 85)}>{ramPct != null ? `${ramPct}%` : '--'}</span></span>
+          {hottest && (
+            <span className="text-muted-foreground">T <span className={hottest.temp_c > 70 ? 'text-term-red' : hottest.temp_c > 50 ? 'text-term-yellow' : 'text-foreground'}>{hottest.temp_c}{'\u00b0'}C</span></span>
+          )}
+        </div>
+      </>}
+    </div>
+  )
+}
+
 // -- main page --
 
 function AgentPage() {
@@ -1836,28 +2110,33 @@ function AgentPage() {
 
   const url = agent.rosbridgeUrl
   const wsStatus = useRosbridgeStatus(url)
-  const statusColor = agent.status === 'online' ? 'text-term-green' : agent.status === 'idle' ? 'text-term-yellow' : 'text-term-red'
-  const wsColor = wsStatus === 'connected' ? 'text-term-green' : wsStatus === 'disconnected' ? 'text-term-red' : 'text-term-yellow'
+
+  const [alerts, setAlerts] = useState<CriticalAlert[]>([])
+  const pushAlert = useCallback((a: Omit<CriticalAlert, 'id' | 'ts'>) => {
+    setAlerts(prev => [
+      { ...a, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: new Date().toLocaleTimeString() },
+      ...prev,
+    ].slice(0, 20))
+  }, [])
+  const dismissAlert = (id: string) => setAlerts(prev => prev.filter(a => a.id !== id))
+  const clearAlerts = () => setAlerts([])
+
+  useStreamHealthAlerts(url ?? '', pushAlert)
+
+  const [lidarPaused, setLidarPaused] = useState(false)
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <h1 className="text-sm font-bold">~/agents/{agent.id}</h1>
-        {url && (
-          <div className="flex items-center gap-2 text-xs">
-            <span className={`${wsColor} ${wsStatus === 'connected' ? 'status-live' : ''}`}>●</span>
-            <span className={wsColor}>{wsStatus}</span>
-            <span className="text-muted-foreground">{url}</span>
-          </div>
-        )}
-      </div>
+      <StatusBar agent={agent} url={url} wsStatus={wsStatus} />
 
-      {/* cameras + info */}
+      <AlertsPanel alerts={alerts} onDismiss={dismissAlert} onClear={clearAlerts} />
+
+      {/* cameras + lidars: flow-card (100%/50%/25%); telemetry flex-1; skills full width */}
       <div className="flex flex-wrap gap-3">
-        <div className="flex gap-0 shrink-0">
-          <div className="tui-panel bg-card flex flex-col w-[400px]">
+        <div className="flow-card flex gap-0">
+          <div className="tui-panel bg-card flex flex-col flex-1 min-w-0">
             <PanelHeader title="MAIN CAMERA" right="/main_camera/left" />
-            <div className="aspect-video bg-black overflow-hidden">
+            <div className="aspect-square bg-black overflow-hidden">
               {url ? (
                 <ImageFeed url={url} topic="/mars/main_camera/left/image_raw/compressed" label="MAIN" depthTopic="/mars/main_camera/depth/image_rect_raw" />
               ) : (
@@ -1868,9 +2147,9 @@ function AgentPage() {
           {url && <HeadPositionPanel url={url} />}
         </div>
 
-        <div className="tui-panel bg-card flex flex-col w-[400px] shrink-0">
+        <div className="flow-card tui-panel bg-card flex flex-col">
           <PanelHeader title="ARM CAMERA" right="/arm/image_raw" />
-          <div className="aspect-video bg-black overflow-hidden">
+          <div className="aspect-square bg-black overflow-hidden">
             {url ? (
               <ImageFeed url={url} topic="/mars/arm/image_raw/compressed" label="ARM" />
             ) : (
@@ -1879,38 +2158,23 @@ function AgentPage() {
           </div>
         </div>
 
-        <div className="tui-panel bg-card flex flex-col flex-1 min-w-[200px]">
-          <PanelHeader title="AGENT INFO" />
-          <div className="p-3 text-xs space-y-2 flex-1">
-            <TelemetryRow label="name" value={agent.name} />
-            <TelemetryRow label="id" value={agent.id} />
-            <TelemetryRow label="status" value={agent.status} color={statusColor} />
-            {url && <TelemetryRow label="ws" value={url} color="text-term-cyan" />}
-          </div>
-        </div>
-
-        {url && <LidarGroup url={url} />}
-      </div>
-
-      {/* telemetry grid: visualizations + readouts */}
-      {url && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 auto-rows-min">
-          <div className="tui-panel bg-card flex flex-col">
-            <PanelHeader title="ENCODER ODOM" right="map frame /amcl_pose" />
-            <div className="p-1 aspect-square">
-              <LiveLocationTrack url={url} />
+        {url && (
+          <>
+            <div className="flow-card flex"><LidarPanel url={url} paused={lidarPaused} onTogglePause={() => setLidarPaused(p => !p)} /></div>
+            <div className="flow-card flex"><LidarOccupancy url={url} paused={lidarPaused} /></div>
+            <div className="tui-panel bg-card flex flex-col flex-1 basis-[240px] min-w-[240px]">
+              <PanelHeader title="ENCODER ODOM" right="map frame /amcl_pose" />
+              <div className="p-1 aspect-square">
+                <LiveLocationTrack url={url} />
+              </div>
             </div>
-          </div>
-          <ImuAccelPanel url={url} />
-          <SystemStatsPanel url={url} />
-          <DrivePanel url={url} />
-          <SkillsPanel url={url} />
-          <div className="col-span-2 grid grid-cols-2 gap-3 auto-rows-min">
-            <RobotPosePanel url={url} />
-            <DepthCloudPanel url={url} />
-          </div>
-        </div>
-      )}
+            <div className="flex-1 basis-[240px] min-w-[240px] grid"><ImuAccelPanel url={url} /></div>
+            <div className="flex-1 basis-[240px] min-w-[240px] grid"><DrivePanel url={url} /></div>
+            <div className="flex-1 basis-[240px] min-w-[240px] grid"><DepthCloudPanel url={url} /></div>
+            <div className="w-full grid"><SkillsPanel url={url} onAlert={pushAlert} /></div>
+          </>
+        )}
+      </div>
 
       {/* chat */}
       {url && <ChatPanel url={url} />}

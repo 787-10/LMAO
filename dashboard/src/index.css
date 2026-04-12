@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+
 @custom-variant dark (@media (prefers-color-scheme: dark));
 
 :root {
@@ -271,5 +272,20 @@
   body {
     @apply bg-background text-foreground font-sans text-sm;
     margin: 0;
+  }
+}
+
+/* responsive widths — appear after tailwind utilities so win the cascade */
+.flow-card {
+  width: 100%;
+}
+@media (min-width: 1100px) {
+  .flow-card {
+    width: calc(50% - 6px);
+  }
+}
+@media (min-width: 1400px) {
+  .flow-card {
+    width: calc(25% - 9px);
   }
 }

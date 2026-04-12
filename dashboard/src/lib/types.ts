@@ -53,6 +53,7 @@ export type WorldEventType =
   | 'COMMS_LOST'
   | 'COMMS_RESTORED'
   | 'HEALTH_SNAPSHOT'
+  | 'CLAUDE_MESSAGE'
 
 export interface WorldEvent {
   type: WorldEventType

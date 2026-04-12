@@ -17,6 +17,7 @@ interface Connection {
   cancelled: boolean
   reconnectTimer: ReturnType<typeof setTimeout> | null
   startTimer: ReturnType<typeof setTimeout> | null
+  lastEventAt: number
 }
 
 const connections = new Map<string, Connection>()
@@ -53,6 +54,7 @@ function getOrCreateConnection(url: string): Connection {
     cancelled: false,
     reconnectTimer: null,
     startTimer: null,
+    lastEventAt: 0,
   }
   connections.set(url, conn)
 
@@ -64,6 +66,7 @@ function getOrCreateConnection(url: string): Connection {
     ws.onopen = () => {
       if (conn!.cancelled) { ws.close(); return }
       conn!.connected = true
+      conn!.lastEventAt = Date.now()
       // clear advertised cache so topics get re-advertised on new connection
       for (const key of advertised) {
         if (key.startsWith(url + '::')) advertised.delete(key)
@@ -74,6 +77,7 @@ function getOrCreateConnection(url: string): Connection {
 
     ws.onmessage = (e) => {
       if (conn!.cancelled) return
+      conn!.lastEventAt = Date.now()
       try {
         // rws sends ,, and [, for null values in arrays -- fix before parsing
         const raw = typeof e.data === 'string'
@@ -203,6 +207,9 @@ function releaseConnection(url: string) {
 
 export type RosbridgeStatus = 'connecting' | 'connected' | 'disconnected'
 
+// Treat the socket as disconnected if no inbound message has arrived for this long.
+export const WS_IDLE_TIMEOUT_MS = 5000
+
 export function useRosbridgeStatus(url: string | undefined): RosbridgeStatus {
   const [status, setStatus] = useState<RosbridgeStatus>('connecting')
 
@@ -210,10 +217,11 @@ export function useRosbridgeStatus(url: string | undefined): RosbridgeStatus {
     if (!url) return
     const conn = getOrCreateConnection(url)
     const interval = setInterval(() => {
-      if (conn.connected) setStatus('connected')
-      else if (conn.cancelled) setStatus('disconnected')
-      else if (conn.ws && conn.ws.readyState === WebSocket.CLOSED) setStatus('disconnected')
-      else setStatus('connecting')
+      if (conn.cancelled) { setStatus('disconnected'); return }
+      if (conn.ws && conn.ws.readyState === WebSocket.CLOSED) { setStatus('disconnected'); return }
+      if (!conn.connected) { setStatus('connecting'); return }
+      const idle = conn.lastEventAt > 0 && Date.now() - conn.lastEventAt > WS_IDLE_TIMEOUT_MS
+      setStatus(idle ? 'disconnected' : 'connected')
     }, 300)
     return () => {
       clearInterval(interval)

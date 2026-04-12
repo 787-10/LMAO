@@ -126,7 +126,6 @@ async def async_main(config: HubConfig, *, sim_mode: bool = False, api_port: int
             })
 
         brain_client.on_brain_event = _on_brain_event
-
     repl = OperatorREPL(reasoner, world, health, simulator=simulator)
 
     # 2. Create FastAPI app
