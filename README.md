@@ -1,6 +1,6 @@
 # LMAO — Large Multi-Agent Orchestration
 
-![LMAO System Overview](static/teaser_img.png)
+<img src="static/teaser_img.png" alt="LMAO System Overview" width="40%">
 
 **Distributed autonomous exploration with onboard fault detection, isolation, and recovery.**
 
