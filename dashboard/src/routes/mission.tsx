@@ -70,7 +70,11 @@ function eventColor(type: string): string {
     case 'TASK_FAILED': return 'text-term-red'
     case 'COMMS_LOST': return 'text-term-red'
     case 'COMMS_RESTORED': return 'text-term-cyan'
-    case 'CLAUDE_MESSAGE': return 'text-term-magenta'
+    case 'BRAIN_DECISION': return 'text-term-yellow'
+    case 'BRAIN_GOAL_SET': return 'text-term-cyan'
+    case 'BRAIN_SERVO_DONE': return 'text-term-green'
+    case 'BRAIN_SKILL_COMPLETED': return 'text-term-green'
+    case 'BRAIN_SKILL_FAILED': return 'text-term-red'
     default: return 'text-muted-foreground'
   }
 }
@@ -82,6 +86,23 @@ function formatTime(ts: number): string {
 function formatPos(pos: [number, number, number] | null): string {
   if (!pos) return '--'
   return `(${pos[0].toFixed(1)}, ${pos[1].toFixed(1)})`
+}
+
+function formatEventData(evt: WorldEvent): string {
+  const d = evt.data as Record<string, unknown>
+  switch (evt.type) {
+    case 'BRAIN_DECISION':
+      return `[${d.action}] ${d.observation ?? ''}`
+    case 'BRAIN_GOAL_SET':
+      return `goal: "${d.goal}"`
+    case 'BRAIN_SERVO_DONE':
+      return `${d.target} → ${d.result}`
+    case 'BRAIN_SKILL_COMPLETED':
+    case 'BRAIN_SKILL_FAILED':
+      return `${d.skill} → ${d.status}`
+    default:
+      return JSON.stringify(d)
+  }
 }
 
 // -- CommandPanel --
@@ -414,7 +435,7 @@ function EventStreamPanel({ events }: { events: WorldEvent[] }) {
               <span className={`shrink-0 font-bold ${eventColor(evt.type)}`}>{evt.type}</span>
               <span className="text-term-cyan shrink-0">{evt.robot}</span>
               <span className="text-foreground truncate">
-                {JSON.stringify(evt.data)}
+                {formatEventData(evt)}
               </span>
             </div>
           ))

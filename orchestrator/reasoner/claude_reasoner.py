@@ -22,6 +22,7 @@ import anthropic
 
 from orchestrator.config import ClaudeConfig
 from orchestrator.comms.connection_manager import ConnectionManager
+from orchestrator.comms.local_brain_client import LocalBrainClient
 from orchestrator.health.fleet_monitor import FleetHealthMonitor
 from orchestrator.reasoner.mission import mission_summary
 from orchestrator.reasoner.tools import TOOLS
@@ -38,81 +39,56 @@ from orchestrator.world_model.task_state import (
 log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
-You are the mission planner for LMAO — a planetary resource-retrieval system
-directing scout rovers from a base station.
+You are the central mission planner for LMAO (Large Multi-Agent Orchestration),
+commanding a fleet of Innate MARS scout rovers from a base-station laptop.
 
-## Your job
-Dispatch scouts to resources and acquire them. Motion verification and
-recovery are ONLY performed when the operator explicitly asks for them.
+## Capabilities
+- Each rover can navigate, scan (LiDAR), and manipulate objects (6-DOF arm).
+- Commands are executed via the robot's **skill framework**.  Key skills:
+  - `innate-os/navigate_to_position` — navigate to {x, y, theta}
+  - `innate-os/record_position` — save current position as a named waypoint
+  - Skills under `local/` are custom team skills
+  - Skills under `innate-os/` are built-in platform skills
+- When using execute_skill, ALWAYS use the full skill name with prefix (e.g. `innate-os/navigate_to_position`, not just `navigate_to_position`).
+- Communication goes through the robot's WebSocket server.
+- You receive real-time health tiers per robot (FULL_CAPABILITY → DEGRADED_SENSORS
+  → LOCAL_ONLY → SAFE_MODE → HIBERNATION).
 
-## Skills (always use the full prefixed name)
+## Your responsibilities
+1. Decompose high-level operator commands into specific, actionable robot tasks.
+2. Always call query_world_state before making task-assignment decisions.
+3. Assign tasks based on robot proximity, capability, and health tier.
+4. To move a robot: call navigate_robot (this sends the command to the robot).
+5. To run any other skill: call execute_skill with the full skill name.
+6. IMPORTANT: assign_task only RECORDS a task — it does NOT send a command.
+   After assign_task, you MUST call navigate_robot or execute_skill to actually
+   dispatch the command. Do NOT call both assign_task AND navigate_robot for
+   the same action — just call navigate_robot directly.
+7. When a health alert arrives, replan: reassign pending tasks from degraded
+   robots to the nearest healthy robot.
+8. Prefer parallel task assignment when robots can work independently.
+9. If no robot can fulfil a task, say so clearly.
 
-Movement (produces wheel/base motion):
-- `innate-os/navigate_to_position`  — go to {x, y, theta} in map frame (primary)
-- `local/move_forward`              — short forward drive
-- `local/turn_left` / `local/turn_right` — turn in place
+## Vision Brain (Qwen VLM)
+- Each rover has a local vision brain (Qwen2.5-VL) that sees through the camera
+  and autonomously decides which skills to execute.
+- Use `dispatch_vision_goal` for tasks that need visual perception: finding objects,
+  approaching targets, visual exploration, describing surroundings.
+- Use `query_vision_brain` to check what the brain is currently doing.
+- Vision goals are fire-and-forget: the brain works autonomously until given a new goal.
+- To stop the vision brain, dispatch a goal like "stop and wait" or use stop_robot.
+- Use `execute_skill` for precise, known-parameter actions (arm moves, specific rotations).
+  Use `dispatch_vision_goal` for open-ended tasks where the robot needs to SEE and DECIDE
+  (e.g. "find the red cup", "explore the room", "go to the bottle").
+- IMPORTANT: `dispatch_vision_goal` uses a SEPARATE connection (port 8765) from the
+  rosbridge health monitor (port 9090). Even if rosbridge shows DEGRADED or LOCAL_ONLY,
+  you should STILL try `dispatch_vision_goal` — it may work fine. Do NOT refuse vision
+  goals based on rosbridge health status.
 
-IMPORTANT: `innate-os/navigate_to_position` and `innate-os/navigate_with_vision`
-commonly return `TaskResult.FAILED` / `success_type=failure` even when the
-rover IS in fact navigating. The response message from these skills is NOT a
-reliable indicator of success or failure — the orchestrator layer wraps them
-with `status: "dispatched"` to make this explicit. When you see
-`status: "dispatched"`, treat the nav goal as successfully sent. Do NOT
-conclude the rover is stuck or that the navigation failed.
-
-Search & acquire:
-- `local/wait_and_look`           — observe with camera
-- `local/turn_left` / `local/turn_right`
-- `local/approach_target_onboard` — vision-guided final approach
-- `local/scout_mission`           — autonomous sweep
-
-Operator-gated skills — NEVER invoke these on your own initiative. Only run
-them when the operator explicitly tells you to (e.g. "check if it's stuck",
-"verify motion", "run the imu check", "recover the rover", "run a battery
-check"):
-- `local/imu_servo_odometry` — compares commanded motion vs IMU
-    success → robot actually moved
-    fault   → wheels moving but IMU stationary → rover is STUCK
-- `local/recovery`            — arm/scoop pushes rover free
-- `local/check_arm`, `local/check_battery`
-
-## The loop
-
-1. **Move.** Given a target, call `navigate_robot` (preferred for
-   coordinates) or an `execute_skill` movement. Wait for its result.
-
-2. **Report.** Tell the operator what happened.
-   - success → "Move to (x, y) succeeded."
-   - failure → "Navigation rejected: <reason>."
-   Then STOP and await the next operator instruction. Do NOT auto-run
-   `imu_servo_odometry`, `recovery`, or any other diagnostic.
-
-3. **Search / acquire** is fine to do on your own once motion is confirmed
-   and you're at the destination (wait_and_look, turn_left/right,
-   approach_target_onboard, scout_mission). These don't need operator
-   permission.
-
-## Handling operator-gated skills
-
-When the operator asks you to check for stuck, run `imu_servo_odometry`:
-- `verdict: "fault"` / STATIONARY → report "Rover is stuck." and stop.
-  If (and only if) the operator then asks you to recover, run
-  `local/recovery`, report the result, and stop.
-- success → report "Motion verified."
-
-## Rules
-
-- Never run `imu_servo_odometry`, `recovery`, `check_arm`, or
-  `check_battery` speculatively. The operator drives those.
-- A failed motion command is NOT "stuck"; it just means the move wasn't
-  executed. Report the failure and wait for instructions.
-- Do not do pre-flight health checks, battery checks, or comms checks.
-- Do not use `assign_task` to drive the robot — it only records tasks.
-  Dispatch real motion via `navigate_robot` or `execute_skill`.
-- Keep replies short: "Dispatching to (x, y)...", "Move succeeded.",
-  "Navigation rejected — reporting.", "Motion verified.",
-  "Rover is stuck.", "Recovery complete.", "Arrived."
-- Speak as a mission controller: direct, professional, no hedging.
+## Style
+- Be concise.  Respond with what you did and why.
+- When you assign tasks, state which robot got which task.
+- On replan, explain what changed and what you reassigned.
 """
 
 
@@ -126,14 +102,14 @@ class ClaudeReasoner:
         conn: ConnectionManager,
         health: FleetHealthMonitor,
         config: ClaudeConfig,
-        broadcaster: Any = None,
+        brain_client: LocalBrainClient | None = None,
     ) -> None:
         self._world = world
         self._conn = conn
         self._health = health
         self._config = config
-        self._broadcaster = broadcaster
-        self._client = anthropic.Anthropic()  # uses ANTHROPIC_API_KEY
+        self._brain = brain_client
+        self._client = anthropic.Anthropic()   # uses ANTHROPIC_API_KEY
         self._messages: list[dict[str, Any]] = []
         self._current_mission: MissionPlan | None = None
 
@@ -298,6 +274,8 @@ class ClaudeReasoner:
             "get_fleet_health": self._tool_get_fleet_health,
             "replan_mission": self._tool_replan_mission,
             "stop_robot": self._tool_stop_robot,
+            "dispatch_vision_goal": self._tool_dispatch_vision_goal,
+            "query_vision_brain": self._tool_query_vision_brain,
         }.get(name)
 
         if handler is None:
@@ -535,3 +513,76 @@ class ClaudeReasoner:
             await self._world.update_task_status(rs.current_task_id, TaskStatus.FAILED)
 
         return {"robot": robot_name, "status": "stopped"}
+
+    # ------------------------------------------------------------------
+    # Vision brain tools
+    # ------------------------------------------------------------------
+
+    async def _tool_dispatch_vision_goal(self, args: dict) -> Any:
+        robot_name = args["robot_name"]
+        goal = args["goal"]
+
+        if self._brain is None:
+            return {"error": "Local brain client not configured"}
+
+        # NOTE: no health-tier gate here. The vision brain runs on the
+        # local Mac and talks to the robot via its own WS channel (port
+        # 8765), independent of the rosbridge connection (port 9090).
+        # Even if rosbridge shows LOCAL_ONLY, the brain may still work.
+
+        result = await self._brain.send_goal(goal)
+        return {
+            "robot": robot_name,
+            "goal": goal,
+            "status": "goal_dispatched" if result.get("success") else "failed",
+            "brain_ack": result.get("ack", ""),
+            "note": (
+                "The vision brain will autonomously work on this goal using "
+                "camera perception. The goal persists until replaced."
+            ),
+        }
+
+    async def _tool_query_vision_brain(self, args: dict) -> Any:
+        robot_name = args["robot_name"]
+
+        if self._brain is None:
+            return {"error": "Local brain client not configured"}
+
+        state = await self._brain.get_state()
+        return {
+            "robot": robot_name,
+            "brain_connected": state["connected"],
+            "current_goal": state["current_goal"],
+            "last_reply": state["last_reply"],
+        }
+
+    # ------------------------------------------------------------------
+    # Task execution helper
+    # ------------------------------------------------------------------
+
+    async def _execute_task_on_robot(self, task: Task) -> dict:
+        """Dispatch a task to the actual robot via connection manager."""
+        robot = task.assigned_robot
+        if robot is None:
+            return {"error": "task not assigned"}
+
+        if task.task_type == TaskType.NAVIGATE:
+            x = task.target.get("x", 0.0)
+            y = task.target.get("y", 0.0)
+            theta = task.target.get("theta", 0.0)
+            return await self._conn.send_nav_goal(robot, x, y, theta)
+
+        if task.task_type == TaskType.MANIPULATE:
+            skill = task.target.get("action", "")
+            params = {k: v for k, v in task.target.items() if k != "action"}
+            return await self._conn.execute_skill(robot, skill, params)
+
+        if task.task_type == TaskType.SCAN:
+            # Scan = navigate to area center then do a 360 LiDAR sweep
+            # For now, just navigate
+            x = task.target.get("x", 0.0)
+            y = task.target.get("y", 0.0)
+            return await self._conn.send_nav_goal(robot, x, y)
+
+        # WAIT — no action needed
+        return {"status": "waiting"}

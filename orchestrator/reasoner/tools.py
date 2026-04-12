@@ -161,4 +161,51 @@ TOOLS = [
             "required": ["robot_name"],
         },
     },
+    {
+        "name": "dispatch_vision_goal",
+        "description": (
+            "Send a natural-language goal to the robot's local vision brain (Qwen VLM). "
+            "The vision brain autonomously executes skills using camera perception "
+            "to accomplish the goal. Use this for tasks that require seeing: "
+            "'find the water bottle', 'approach the person', 'explore the room'. "
+            "Fire-and-forget: the goal persists until replaced by a new one. "
+            "To cancel, dispatch a new goal like 'stop and wait'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "robot_name": {
+                    "type": "string",
+                    "description": "Name of the robot whose vision brain receives the goal.",
+                },
+                "goal": {
+                    "type": "string",
+                    "description": (
+                        "Natural-language goal. Examples: "
+                        "'find the water bottle', 'go explore the room', "
+                        "'approach the person and wave'."
+                    ),
+                },
+            },
+            "required": ["robot_name", "goal"],
+        },
+    },
+    {
+        "name": "query_vision_brain",
+        "description": (
+            "Check the current state of the robot's local vision brain: "
+            "what goal is active and the last reply from the VLM. "
+            "Use this to monitor progress of a dispatched vision goal."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "robot_name": {
+                    "type": "string",
+                    "description": "Name of the robot to query.",
+                },
+            },
+            "required": ["robot_name"],
+        },
+    },
 ]

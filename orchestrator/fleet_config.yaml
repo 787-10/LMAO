@@ -8,6 +8,10 @@ claude:
   model: claude-sonnet-4-20250514
   max_tokens: 4096
 
+local_brain:
+  host: localhost
+  port: 8765
+
 health:
   rate_window_s: 2.0
   rate_degraded_threshold: 0.5   # <50% of expected rate = DEGRADED

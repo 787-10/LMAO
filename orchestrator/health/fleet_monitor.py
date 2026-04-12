@@ -87,6 +87,10 @@ class FleetHealthMonitor:
         """Callback for every health-monitored topic.  Fires on asyncio loop."""
         self._rate_monitor.record(robot_name, topic)
 
+        # Any topic message proves comms are alive (don't rely solely on
+        # the ws_messages synthetic topic which the robot may not publish).
+        self._last_ws_time[robot_name] = time.monotonic()
+
         # Route to world-model updaters (schedule as coroutines)
         loop = asyncio.get_event_loop()
         if topic == "/amcl_pose":

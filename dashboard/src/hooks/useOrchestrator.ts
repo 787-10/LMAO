@@ -108,6 +108,8 @@ export function useOrchestratorEvents() {
     const listener = (evt: WorldEvent) => {
       if (evt.type === 'HEALTH_SNAPSHOT') {
         setHealthSnapshot(evt.data as unknown as HealthReport)
+      } else if (evt.type === 'ping') {
+        // keepalive — ignore
       } else {
         setEvents((prev) => {
           const next = [...prev, evt]
