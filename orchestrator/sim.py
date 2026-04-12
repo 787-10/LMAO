@@ -142,6 +142,7 @@ class Simulator:
         self._positions: dict[str, list[float]] = {}  # [x, y, theta]
         self._batteries: dict[str, float] = {}
         self._faulted: dict[str, set[str]] = {}       # robot -> set of killed topics
+        self._blacked_out: set[str] = set()            # robots with total comms loss
 
     async def start(self) -> None:
         for cfg in self._fleet:
@@ -157,6 +158,7 @@ class Simulator:
             asyncio.create_task(self._battery_loop()),
             asyncio.create_task(self._scan_loop()),
             asyncio.create_task(self._heartbeat_loop()),
+            asyncio.create_task(self._ws_messages_loop()),
         ]
         log.info("[SIM] Simulator started — %d robots", len(self._fleet))
 
@@ -186,6 +188,16 @@ class Simulator:
         self._batteries[robot_name] = pct
         log.info("[SIM] Battery %s set to %.0f%%", robot_name, pct)
 
+    def blackout(self, robot_name: str) -> None:
+        """Simulate total comms loss — stop ALL telemetry for this robot."""
+        self._blacked_out.add(robot_name)
+        log.info("[SIM] BLACKOUT: %s — all telemetry stopped", robot_name)
+
+    def restore_comms(self, robot_name: str) -> None:
+        """Restore comms — resume all telemetry for this robot."""
+        self._blacked_out.discard(robot_name)
+        log.info("[SIM] COMMS RESTORED: %s — telemetry resumed", robot_name)
+
     # -- Telemetry loops ----------------------------------------------
 
     async def _odom_loop(self) -> None:
@@ -193,6 +205,8 @@ class Simulator:
         while True:
             for cfg in self._fleet:
                 name = cfg.name
+                if name in self._blacked_out:
+                    continue
                 if "/odom" in self._faulted.get(name, set()):
                     continue
                 pos = self._positions[name]
@@ -220,6 +234,8 @@ class Simulator:
         while True:
             for cfg in self._fleet:
                 name = cfg.name
+                if name in self._blacked_out:
+                    continue
                 self._batteries[name] = max(0.0, self._batteries[name] - 0.05)
                 msg = {
                     "voltage": 10.0 + (self._batteries[name] / 100.0) * 2.5,
@@ -233,6 +249,8 @@ class Simulator:
         while True:
             for cfg in self._fleet:
                 name = cfg.name
+                if name in self._blacked_out:
+                    continue
                 if "/scan" in self._faulted.get(name, set()):
                     continue
                 msg = {
@@ -248,12 +266,25 @@ class Simulator:
         while True:
             for cfg in self._fleet:
                 name = cfg.name
+                if name in self._blacked_out:
+                    continue
                 if "/lmao/heartbeat" in self._faulted.get(name, set()):
                     continue
                 msg = {"data": f"alive (tick={tick})"}
                 self._conn.push_message(name, "/lmao/heartbeat", msg)
             tick += 1
             await asyncio.sleep(1.0)
+
+    async def _ws_messages_loop(self) -> None:
+        """~0.5 Hz simulated cloud bridge messages (for comms blackout detection)."""
+        while True:
+            for cfg in self._fleet:
+                name = cfg.name
+                if name in self._blacked_out:
+                    continue
+                msg = {"data": "heartbeat"}
+                self._conn.push_message(name, "ws_messages", msg)
+            await asyncio.sleep(2.0)
 
 
 # ------------------------------------------------------------------
