@@ -1452,9 +1452,10 @@ const TRACK_MIN_DIST = 0.05 // meters between recorded points
 function LiveLocationTrack({ url }: { url: string }) {
   const trackRef = useRef<{ x: number; y: number }[]>([])
   const [track, setTrack] = useState<{ x: number; y: number }[]>([])
+  // /amcl_pose = map frame — same coordinate system as navigate_to_position
   const { data } = useRosbridgeTopic<{
     pose?: { pose?: { position?: { x: number; y: number } } }
-  }>(url, '/odom', 'nav_msgs/msg/Odometry', 300)
+  }>(url, '/amcl_pose', 'geometry_msgs/msg/PoseWithCovarianceStamped', 200)
 
   useEffect(() => {
     if (!data?.pose?.pose?.position) return
@@ -2429,7 +2430,7 @@ function AgentPage() {
       {/* location track */}
       {url && (
         <div className="tui-panel bg-card flex flex-col" style={{ maxWidth: 300 }}>
-          <PanelHeader title="LOCATION TRACK" right="/odom" />
+          <PanelHeader title="ENCODER ODOM" right="map frame /amcl_pose" />
           <div className="p-2 aspect-square max-h-64">
             <LiveLocationTrack url={url} />
           </div>
