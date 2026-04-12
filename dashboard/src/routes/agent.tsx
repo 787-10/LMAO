@@ -388,22 +388,22 @@ function RobotPosePanel({ url }: { url: string }) {
 
   // viewBox dimensions
   const CX = 200, CY = 140
-  // map +-5m world range to +-80 iso units
-  const S = 16
+  // map +-5m world range to +-96 iso units (grid 20% larger)
+  const S = 19.2
   const gx = Math.max(-5, Math.min(5, pos.x)) * S
   const gy = Math.max(-5, Math.min(5, pos.y)) * S
-  const gz = Math.max(-2, Math.min(2, pos.z)) * 10
+  const gz = Math.max(-2, Math.min(2, pos.z)) * 12
 
   const projected = isoProject(gx, gy, gz)
   const robotX = CX + projected.sx
   const robotY = CY + projected.sy
 
-  // grid spans +-80 iso units (10 lines each way)
-  const GRID = 80
+  // grid spans +-96 iso units
+  const GRID = 96
   const LINES = 9
 
   return (
-    <div className="tui-panel bg-card col-span-2">
+    <div className="tui-panel bg-card">
       <PanelHeader title="POSE + ODOM" />
       <div className="flex">
         <div className="flex-1 p-2" style={{ maxHeight: 320 }}>
@@ -628,7 +628,10 @@ function SkillsPanel({ url }: { url: string }) {
   const [results, setResults] = useState<Record<string, SkillResult>>({})
   const [params, setParams] = useState<Record<string, Record<string, string>>>({})
 
-  const skills = data?.skills ?? []
+  const skills = (data?.skills ?? []).sort((a, b) =>
+    (a.name ?? '').toLowerCase().localeCompare((b.name ?? '').toLowerCase()),
+  )
+  console.log(skills)
 
   function setParam(skillId: string, key: string, value: string) {
     setParams(p => ({ ...p, [skillId]: { ...p[skillId], [key]: value } }))
@@ -658,9 +661,9 @@ function SkillsPanel({ url }: { url: string }) {
   const inputCls = 'w-14 bg-background border border-border px-1 py-0.5 text-[10px] font-mono focus:outline-none focus:border-term-cyan'
 
   return (
-    <div className="tui-panel bg-card flex flex-col col-span-2 row-span-2">
+    <div className="tui-panel bg-card flex flex-col col-span-2">
       <PanelHeader title="SKILLS" right={skills.length ? `${skills.length} available` : 'loading…'} />
-      <div className="flex flex-col divide-y text-xs max-h-48 overflow-y-auto">
+      <div className="flex flex-col divide-y text-xs max-h-128 overflow-y-auto">
         {skills.length === 0 && (
           <div className="px-3 py-3 text-muted-foreground">no skills received</div>
         )}
@@ -716,93 +719,6 @@ function SkillsPanel({ url }: { url: string }) {
   )
 }
 
-function GotoPanel({ url }: { url: string }) {
-  const [x, setX] = useState('')
-  const [y, setY] = useState('')
-  const [theta, setTheta] = useState('0')
-  const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null)
-  const [running, setRunning] = useState(false)
-
-  function send() {
-    const px = parseFloat(x)
-    const py = parseFloat(y)
-    const pt = parseFloat(theta)
-    if (isNaN(px) || isNaN(py)) { setStatus({ ok: false, msg: 'invalid x or y' }); return }
-    setRunning(true)
-    setStatus({ ok: true, msg: `sending → (${px}, ${py}, θ=${isNaN(pt) ? 0 : pt})…` })
-    sendActionGoal(url, 'innate-os/goto_coordinates', (ok, msg) => {
-      setStatus({ ok, msg: msg || (ok ? 'done' : 'failed') })
-      setRunning(false)
-    }, { x: px, y: py, theta: isNaN(pt) ? 0 : pt })
-  }
-
-  const inputCls = 'w-full bg-background border border-border px-2 py-1 text-xs font-mono focus:outline-none focus:border-term-cyan'
-
-  return (
-    <div className="tui-panel bg-card">
-      <PanelHeader title="GO TO COORDINATES" />
-      <div className="p-2 space-y-2 text-xs">
-        <div className="grid grid-cols-3 gap-1.5">
-          <div>
-            <div className="text-muted-foreground mb-0.5">X (m)</div>
-            <input className={inputCls} placeholder="0.0" value={x} onChange={e => setX(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} />
-          </div>
-          <div>
-            <div className="text-muted-foreground mb-0.5">Y (m)</div>
-            <input className={inputCls} placeholder="0.0" value={y} onChange={e => setY(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} />
-          </div>
-          <div>
-            <div className="text-muted-foreground mb-0.5">θ (rad)</div>
-            <input className={inputCls} placeholder="0.0" value={theta} onChange={e => setTheta(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} />
-          </div>
-        </div>
-        <button
-          onClick={send}
-          disabled={running}
-          className="w-full py-1 border border-term-green text-term-green bg-transparent hover:bg-term-green/10 disabled:opacity-40 disabled:cursor-not-allowed font-mono text-xs"
-        >
-          {running ? 'NAVIGATING…' : '▶ GO'}
-        </button>
-        {status && (
-          <div className={`font-mono truncate ${status.ok ? 'text-term-green' : 'text-term-red'}`}>
-            {status.msg}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function SkillUpdatePanel({ url }: { url: string }) {
-  const [text, setText] = useState('')
-
-  function send() {
-    if (!text.trim()) return
-    publishRosbridge(url, '/brain/skill_status_update', 'std_msgs/msg/String', { data: text.trim() })
-    setText('')
-  }
-
-  return (
-    <div className="tui-panel bg-card">
-      <PanelHeader title="SKILL UPDATE" />
-      <div className="p-2 space-y-2 text-xs">
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && send()}
-          placeholder="status update..."
-          className="w-full bg-background border border-border px-2 py-1 text-xs font-mono focus:outline-none focus:border-term-cyan"
-        />
-        <button
-          onClick={send}
-          className="w-full py-1 border border-term-green text-term-green bg-transparent hover:bg-term-green/10 font-mono text-xs"
-        >
-          ▶ PUBLISH
-        </button>
-      </div>
-    </div>
-  )
-}
 
 interface ChatMessage {
   text: string
@@ -1908,271 +1824,6 @@ function DepthCloudPanel({ url }: { url: string }) {
   )
 }
 
-// -- lidar x vision cross-check --
-
-type CheckState = 'idle' | 'checking' | 'waiting_brain' | 'done'
-
-interface CheckResult {
-  verdict: 'clear' | 'lidar_error' | 'obstacle_confirmed' | 'no_anomaly'
-  message: string
-  anomaly?: { angleDeg: number; rangeM: number; clusterSize: number; medianM: number }
-  brainReply?: string
-}
-
-function findLidarAnomaly(scan: LaserScanMsg): CheckResult['anomaly'] | null {
-  const { ranges, range_min, range_max, angle_min, angle_increment } = scan
-  const rmin = range_min ?? 0.15
-  const rmax = range_max ?? 12.0
-
-  const isBlocked = (r: number | null) =>
-    r == null || !isFinite(r) || r <= 0 || r < rmin
-
-  const valid = ranges.filter(r => r != null && isFinite(r) && r > rmin && r < rmax) as number[]
-  const median = valid.length >= 20
-    ? [...valid].sort((a, b) => a - b)[Math.floor(valid.length / 2)]
-    : null
-
-  const hot = ranges.reduce<number[]>((acc, r, i) => {
-    if (isBlocked(r)) { acc.push(i); return acc }
-    if (median && (r as number) < median * 0.35) { acc.push(i); return acc }
-    return acc
-  }, [])
-
-  if (hot.length < 5) return null
-
-  const clusters: number[][] = []
-  let cur = [hot[0]]
-  for (let i = 1; i < hot.length; i++) {
-    if (hot[i] - cur[cur.length - 1] <= 3) cur.push(hot[i])
-    else { clusters.push(cur); cur = [hot[i]] }
-  }
-  clusters.push(cur)
-  const best = clusters.reduce((a, b) => b.length > a.length ? b : a)
-  if (best.length < 5) return null
-
-  const midIdx = best[Math.floor(best.length / 2)]
-  const midAngle = angle_min + midIdx * angle_increment
-  const midRange = ranges[midIdx]
-  return {
-    angleDeg: Math.round(midAngle * (180 / Math.PI) * 10) / 10,
-    rangeM: midRange != null && isFinite(midRange) ? Math.round(midRange * 1000) / 1000 : 0,
-    clusterSize: best.length,
-    medianM: median ? Math.round(median * 1000) / 1000 : 0,
-  }
-}
-
-function LidarVisionCheck({ url }: { url: string }) {
-  const { data: scan } = useRosbridgeTopic<LaserScanMsg>(url, '/scan', 'sensor_msgs/msg/LaserScan', 500)
-  const { data: chatOut } = useRosbridgeTopic<{ data?: string }>(url, '/brain/chat_out', 'std_msgs/msg/String', 0)
-  const { data: tts } = useRosbridgeTopic<{ data?: string }>(url, '/brain/tts', 'std_msgs/msg/String', 0)
-  const [state, setState] = useState<CheckState>('idle')
-  const [result, setResult] = useState<CheckResult | null>(null)
-  const sessionRef = useRef(0)
-  const waitingSession = useRef(-1)
-
-  function handleBrainReply(reply: string) {
-    if (waitingSession.current < 0) return
-    const session = waitingSession.current
-    waitingSession.current = -1
-    const confirmed = reply.trim().toUpperCase().startsWith('YES')
-    setResult((prev) => {
-      if (session !== sessionRef.current) return prev
-      return {
-        verdict: confirmed ? 'obstacle_confirmed' : 'lidar_error',
-        message: confirmed
-          ? `Obstacle confirmed by camera.`
-          : `LIDAR ERROR: sensor sees obstacle but camera sees nothing.`,
-        anomaly: prev?.anomaly,
-        brainReply: reply,
-      }
-    })
-    setState('done')
-  }
-
-  useEffect(() => {
-    if (chatOut?.data) handleBrainReply(chatOut.data)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatOut])
-
-  useEffect(() => {
-    if (tts?.data) handleBrainReply(tts.data)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tts])
-
-  function runCheck() {
-    if (state === 'checking' || state === 'waiting_brain') return
-    if (!scan) { setResult({ verdict: 'clear', message: 'No scan data yet.' }); setState('done'); return }
-
-    const session = ++sessionRef.current
-    setState('checking')
-    setResult(null)
-    waitingSession.current = -1
-
-    const anomaly = findLidarAnomaly(scan)
-    if (!anomaly) {
-      setResult({ verdict: 'no_anomaly', message: 'Lidar looks normal \u2014 no close-range anomalies detected.' })
-      setState('done')
-      return
-    }
-
-    setState('waiting_brain')
-    waitingSession.current = session
-    const question = `Look straight ahead. Is there a solid physical object, wall, or obstacle directly blocking the camera view or the robot's immediate path? Answer with YES or NO followed by one sentence of explanation.`
-    publishRosbridge(url, '/brain/chat_in', 'std_msgs/msg/String', { data: question })
-
-    setResult({ verdict: 'clear', message: `Anomaly at ${anomaly.angleDeg}\u00b0 / ${anomaly.rangeM}m \u2014 asking brain\u2026`, anomaly })
-
-    setTimeout(() => {
-      if (waitingSession.current !== session) return
-      waitingSession.current = -1
-      setResult({ verdict: 'clear', message: 'Brain did not respond in time.', anomaly })
-      setState('done')
-    }, 20000)
-  }
-
-  const verdictColor = !result ? '' :
-    result.verdict === 'lidar_error' ? 'text-term-red' :
-      result.verdict === 'obstacle_confirmed' ? 'text-term-green' :
-        result.verdict === 'no_anomaly' ? 'text-term-green' : 'text-term-yellow'
-
-  return (
-    <div className="tui-panel bg-card flex flex-col col-span-2">
-      <PanelHeader title="LIDAR x VISION CHECK" right={scan ? `${scan.ranges?.length ?? 0} beams` : 'no scan'} />
-      <div className="p-3 space-y-2 text-xs">
-        <button
-          onClick={runCheck}
-          disabled={state === 'checking' || state === 'waiting_brain'}
-          className="w-full py-1 border border-term-cyan text-term-cyan bg-transparent hover:bg-term-cyan/10 disabled:opacity-40 disabled:cursor-not-allowed font-mono text-xs"
-        >
-          {state === 'checking' ? 'ANALYZING LIDAR\u2026' : state === 'waiting_brain' ? 'ASKING BRAIN\u2026' : '\u25b6 RUN LIDAR x VISION CHECK'}
-        </button>
-        {result && (
-          <div className="space-y-1">
-            <div className={`font-mono ${verdictColor}`}>{result.message}</div>
-            {result.anomaly && (
-              <div className="text-muted-foreground">
-                anomaly: {result.anomaly.angleDeg}{'\u00b0'} - {result.anomaly.rangeM}m - {result.anomaly.clusterSize} beams - median {result.anomaly.medianM}m
-              </div>
-            )}
-            {result.brainReply && (
-              <div className="text-muted-foreground italic">brain: &quot;{result.brainReply}&quot;</div>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// -- odom fdir (wheel slip detection) --
-
-function OdomFdirPanel({ url }: { url: string }) {
-  const { data: odomData } = useRosbridgeTopic<Record<string, unknown>>(url, '/odom', 'nav_msgs/msg/Odometry', 200)
-  const { data: amclData } = useRosbridgeTopic<Record<string, unknown>>(url, '/amcl_pose', 'geometry_msgs/msg/PoseWithCovarianceStamped', 200)
-
-  const baselineRef = useRef<{ odom: [number, number] | null; amcl: [number, number] | null } | null>(null)
-  const [running, setRunning] = useState(false)
-  const [verdict, setVerdict] = useState<{ status: string; msg: string } | null>(null)
-
-  const latestOdomDeltaRef = useRef<number | null>(null)
-  const latestAmclDeltaRef = useRef<number | null>(null)
-
-  const getPos = (d: Record<string, unknown> | null): [number, number] | null => {
-    try {
-      const pose = (d as { pose?: { pose?: { position?: { x?: unknown; y?: unknown } } } } | null)?.pose?.pose?.position
-      if (typeof pose?.x === 'number' && typeof pose?.y === 'number') return [pose.x, pose.y]
-    } catch { /* ignore */ }
-    return null
-  }
-
-  const odomPos = getPos(odomData)
-  const amclPos = getPos(amclData)
-
-  const dist = (a: [number, number] | null, b: [number, number] | null) =>
-    a && b ? Math.hypot(b[0] - a[0], b[1] - a[1]) : null
-
-  const odomDelta = running ? dist(baselineRef.current?.odom ?? null, odomPos) : null
-  const amclDelta = running ? dist(baselineRef.current?.amcl ?? null, amclPos) : null
-
-  latestOdomDeltaRef.current = odomDelta
-  latestAmclDeltaRef.current = amclDelta
-
-  const divergence = odomDelta != null && amclDelta != null ? odomDelta - amclDelta : null
-  const isFault = divergence != null && odomDelta != null && odomDelta > 0.15 && divergence > odomDelta * 0.5
-
-  function startCheck() {
-    baselineRef.current = { odom: odomPos, amcl: amclPos }
-    latestOdomDeltaRef.current = null
-    latestAmclDeltaRef.current = null
-    setRunning(true)
-    setVerdict(null)
-    setTimeout(() => {
-      const od = latestOdomDeltaRef.current
-      const ad = latestAmclDeltaRef.current
-      const fault = od != null && od > 0.15 && ad != null && ad < od * 0.5
-      setRunning(false)
-      setVerdict(fault
-        ? { status: 'fault', msg: `Wheel slip! Odom: ${od?.toFixed(3)}m  AMCL: ${ad?.toFixed(3)}m` }
-        : { status: 'nominal', msg: `All sources agree \u2014 odom: ${od?.toFixed(3)}m  amcl: ${ad?.toFixed(3)}m` }
-      )
-    }, 20000)
-  }
-
-  const bar = (val: number | null, max: number, color: string) => (
-    <div className="h-2 w-full bg-muted rounded-sm overflow-hidden">
-      <div className="h-full rounded-sm transition-all" style={{ width: `${Math.min(100, ((val ?? 0) / max) * 100)}%`, backgroundColor: color }} />
-    </div>
-  )
-
-  return (
-    <div className="tui-panel bg-card flex flex-col col-span-2">
-      <PanelHeader title="ODOM FDIR" right="wheel slip detection" />
-      <div className="p-3 space-y-3 text-xs">
-        <button
-          onClick={startCheck}
-          disabled={running}
-          className="w-full py-1 border border-term-cyan text-term-cyan bg-transparent hover:bg-term-cyan/10 disabled:opacity-40 disabled:cursor-not-allowed font-mono text-xs"
-        >
-          {running ? 'MONITORING\u2026 (lift wheels now)' : '\u25b6 START ODOM FDIR CHECK'}
-        </button>
-
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <div className="flex justify-between mb-1">
-              <span className="text-muted-foreground">ODOM {'\u0394'}</span>
-              <span className="text-term-yellow font-mono">{odomDelta != null ? `${odomDelta.toFixed(3)}m` : '--'}</span>
-            </div>
-            {bar(odomDelta, 1.2, '#afaf5f')}
-            <div className="text-[10px] text-muted-foreground mt-0.5">wheel encoders</div>
-          </div>
-          <div>
-            <div className="flex justify-between mb-1">
-              <span className="text-muted-foreground">AMCL {'\u0394'}</span>
-              <span className="text-term-green font-mono">{amclDelta != null ? `${amclDelta.toFixed(3)}m` : '--'}</span>
-            </div>
-            {bar(amclDelta, 1.2, '#5faf5f')}
-            <div className="text-[10px] text-muted-foreground mt-0.5">lidar map-match</div>
-          </div>
-        </div>
-
-        {running && divergence != null && (
-          <div className={`font-mono text-center py-1 border ${isFault ? 'border-term-red text-term-red' : 'border-term-green text-term-green'}`}>
-            {isFault
-              ? `\u26a0 WHEEL SLIP  divergence: ${divergence.toFixed(3)}m`
-              : `\u2713 NOMINAL  divergence: ${divergence.toFixed(3)}m`}
-          </div>
-        )}
-
-        {verdict && !running && (
-          <div className={`font-mono text-center py-1 border ${verdict.status === 'fault' ? 'border-term-red text-term-red' : 'border-term-green text-term-green'}`}>
-            {verdict.status === 'fault' ? '\u26a0 FAULT' : '\u2713 NOMINAL'} {'\u2014'} {verdict.msg}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
 // -- main page --
 
 function AgentPage() {
@@ -2254,13 +1905,9 @@ function AgentPage() {
           <SystemStatsPanel url={url} />
           <DrivePanel url={url} />
           <SkillsPanel url={url} />
-          <LidarVisionCheck url={url} />
-          <OdomFdirPanel url={url} />
-          <RobotPosePanel url={url} />
-          <DepthCloudPanel url={url} />
-          <div className="flex flex-col gap-3">
-            <GotoPanel url={url} />
-            <SkillUpdatePanel url={url} />
+          <div className="col-span-2 grid grid-cols-2 gap-3 auto-rows-min">
+            <RobotPosePanel url={url} />
+            <DepthCloudPanel url={url} />
           </div>
         </div>
       )}
