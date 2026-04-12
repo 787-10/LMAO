@@ -37,6 +37,8 @@ class FleetHealthMonitor:
         )
         self._degradation: dict[str, DegradationManager] = {}
         self._last_ws_time: dict[str, float] = {}
+        self._comms_lost: dict[str, bool] = {}       # per-robot comms blackout state
+        self._comms_lost_since: dict[str, float] = {} # when comms were lost
         self._eval_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
@@ -51,6 +53,7 @@ class FleetHealthMonitor:
                 heartbeat_timeout_s=self._config.heartbeat_timeout_s,
                 comms_blackout_s=self._config.comms_blackout_s,
             )
+            self._comms_lost[name] = False
             self._subscribe_robot(name)
 
         self._eval_task = asyncio.create_task(self._eval_loop())
@@ -110,6 +113,8 @@ class FleetHealthMonitor:
             await self._evaluate_all()
 
     async def _evaluate_all(self) -> None:
+        now = time.monotonic()
+
         for robot_name, deg in self._degradation.items():
             # Collect topic health for topics with known expected rates
             topic_health: dict[str, TopicHealth] = {}
@@ -125,10 +130,54 @@ class FleetHealthMonitor:
             last_hb = rs.last_heartbeat_time if rs else None
             last_ws = self._last_ws_time.get(robot_name)
 
+            # --- Comms blackout detection (Channel M) ---
+            was_lost = self._comms_lost.get(robot_name, False)
+            is_blackout = (
+                last_ws is not None
+                and (now - last_ws) > self._config.comms_blackout_s
+            )
+
+            if is_blackout and not was_lost:
+                # Comms just went down
+                self._comms_lost[robot_name] = True
+                self._comms_lost_since[robot_name] = now
+                log.warning("COMMS LOST: %s (no ws_messages for %.0fs)",
+                            robot_name, now - last_ws)
+                await self._world.emit_event(
+                    WorldEvent(
+                        type=EventType.COMMS_LOST,
+                        robot=robot_name,
+                        data={
+                            "last_contact_ago_s": round(now - last_ws, 1),
+                            "robot_last_position": rs.position if rs else None,
+                            "robot_last_task": rs.current_task_id if rs else None,
+                        },
+                    )
+                )
+
+            elif not is_blackout and was_lost:
+                # Comms just restored
+                self._comms_lost[robot_name] = False
+                blackout_duration = now - self._comms_lost_since.get(robot_name, now)
+                log.info("COMMS RESTORED: %s (blackout lasted %.0fs)",
+                         robot_name, blackout_duration)
+                await self._world.emit_event(
+                    WorldEvent(
+                        type=EventType.COMMS_RESTORED,
+                        robot=robot_name,
+                        data={
+                            "blackout_duration_s": round(blackout_duration, 1),
+                            "robot_position": rs.position if rs else None,
+                            "robot_battery": rs.battery_percentage if rs else None,
+                            "robot_task": rs.current_task_id if rs else None,
+                        },
+                    )
+                )
+
+            # --- Standard tier evaluation ---
             new_tier = deg.evaluate(topic_health, battery_pct, last_hb, last_ws)
             if new_tier is not None:
                 await self._world.update_health_tier(robot_name, new_tier)
-                # Determine event type
                 if new_tier == HealthTier.FULL_CAPABILITY:
                     etype = EventType.ROBOT_RECOVERED
                 else:
