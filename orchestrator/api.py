@@ -203,6 +203,19 @@ def create_api(
             simulator.set_battery(req.robot, req.percentage)
             return {"status": "drained", "robot": req.robot, "percentage": req.percentage}
 
+        class BlackoutRequest(BaseModel):
+            robot: str
+
+        @app.post("/api/sim/blackout")
+        async def sim_blackout(req: BlackoutRequest):
+            simulator.blackout(req.robot)
+            return {"status": "blacked_out", "robot": req.robot}
+
+        @app.post("/api/sim/restore")
+        async def sim_restore(req: BlackoutRequest):
+            simulator.restore_comms(req.robot)
+            return {"status": "comms_restored", "robot": req.robot}
+
     # --- WebSocket: event stream ---
 
     @app.websocket("/ws/events")
