@@ -10,7 +10,7 @@ Planetary rovers today are slow, rigid, and fragile. A single rover follows a pr
 
 LMAO replaces the single-rover paradigm with a **hub-and-scout architecture**. A stationary hub deploys lightweight scout rovers that autonomously navigate to resource targets, adapt when conditions change, and recover from failures without human intervention. When a scout gets stuck, it detects the fault onboard and executes a physical recovery maneuver. When a sensor degrades, the system gracefully reduces capability rather than halting. When communications drop, scouts continue operating on their last-known mission parameters while the hub replans around them.
 
-The central hub runs an AI mission planner (Claude API) that decomposes high-level objectives into robot tasks, monitors fleet health in real time, and dynamically reassigns work when scouts fail or conditions shift. This is the "O" in LMAO — the orchestration layer that makes multi-agent exploration resilient and scalable.
+The central hub runs an AI mission planner (Claude API) that decomposes high-level objectives into robot tasks, monitors fleet health in real time, and dynamically reassigns work when scouts fail or conditions shift. This is the "O" in LMAO: the orchestration layer that makes multi-agent exploration resilient and scalable.
 
 ## Why distributed architecture
 
@@ -22,27 +22,27 @@ The central hub runs an AI mission planner (Claude API) that decomposes high-lev
 | Human-in-the-loop for every fault | Onboard FDIR handles faults autonomously |
 | Scales by building bigger rovers | Scales by deploying more scouts |
 
-A hub-and-scout fleet distributes risk. Losing a scout degrades capability but never ends the mission. The hub redistributes that scout's tasks to healthy rovers and continues. This mirrors how NASA designs redundant spacecraft systems — no single point of failure.
+A hub-and-scout fleet distributes risk. Losing a scout degrades capability but never ends the mission. The hub redistributes that scout's tasks to healthy rovers and continues. This mirrors how NASA designs redundant spacecraft systems with no single point of failure.
 
-## Onboard FDIR — why it matters
+## Onboard FDIR: why it matters
 
-Fault Detection, Isolation, and Recovery is the critical capability that enables truly autonomous exploration. Mars rovers experience 4-24 minute communication delays with Earth. Curiosity and Perseverance have pre-programmed safe modes, but they still require human diagnosis for most faults. For future missions — lunar resource extraction, Mars sample caching, deep-space exploration — rovers must detect and recover from faults independently.
+Fault Detection, Isolation, and Recovery is the critical capability that enables truly autonomous exploration. Mars rovers experience 4-24 minute communication delays with Earth. Curiosity and Perseverance have pre-programmed safe modes, but they still require human diagnosis for most faults. For future missions, such as lunar resource extraction, Mars sample caching, deep-space exploration, rovers must detect and recover from faults independently.
 
 LMAO implements a multi-channel FDIR stack running onboard each scout:
 
 **Detection channels:**
-- **Topic rate health** — rolling-window monitoring of every ROS2 data stream. If LiDAR drops below 50% of expected rate, the system flags degradation before total failure.
-- **Frozen feed detection** — frame-to-frame image differencing catches the subtle failure where a camera topic keeps publishing but the image never changes.
-- **Joint command vs actual** — compares commanded arm positions to encoder readings. Catches stuck joints, collisions, and mechanical failures.
-- **IMU/encoder cross-validation** — compares wheel odometry against IMU integration to detect wheel slip, terrain anomalies, and sensor drift.
-- **LiDAR-camera cross-check** — projects LiDAR points into the camera frame and compares depth estimates. Detects sensor occlusion and calibration drift.
+- **Topic rate health**: rolling-window monitoring of every ROS2 data stream. If LiDAR drops below 50% of expected rate, the system flags degradation before total failure.
+- **Frozen feed detection**: frame-to-frame image differencing catches the subtle failure where a camera topic keeps publishing but the image never changes.
+- **Joint command vs actual**: compares commanded arm positions to encoder readings. Catches stuck joints, collisions, and mechanical failures.
+- **IMU/encoder cross-validation**: compares wheel odometry against IMU integration to detect wheel slip, terrain anomalies, and sensor drift.
+- **LiDAR-camera cross-check**: projects LiDAR points into the camera frame and compares depth estimates. Detects sensor occlusion and calibration drift.
 
 **Recovery behaviors:**
-- **Physical self-recovery** — when a scout detects it's stuck (commanded motion but no odometry change), it autonomously executes a scoop/arm maneuver to push itself free, then verifies recovery and resumes the mission.
-- **Graceful degradation** — five-tier capability model (FULL_CAPABILITY, DEGRADED_SENSORS, LOCAL_ONLY, SAFE_MODE, HIBERNATION) with automatic tier transitions. Each transition adjusts what the scout attempts rather than simply stopping.
-- **Communications blackout protocol** — when a scout loses contact with the hub, it falls back to autonomous operation on its last-known mission parameters. The hub detects the loss and replans without that scout. When comms restore, the system reconciles state and redistributes work across the reunified fleet. This directly mirrors how Mars rovers handle Earth-contact windows.
+- **Physical self-recovery**: when a scout detects it's stuck (commanded motion but no odometry change), it autonomously executes a scoop/arm maneuver to push itself free, then verifies recovery and resumes the mission.
+- **Graceful degradation**: five-tier capability model (FULL_CAPABILITY, DEGRADED_SENSORS, LOCAL_ONLY, SAFE_MODE, HIBERNATION) with automatic tier transitions. Each transition adjusts what the scout attempts rather than simply stopping.
+- **Communications blackout protocol**: when a scout loses contact with the hub, it falls back to autonomous operation on its last-known mission parameters. The hub detects the loss and replans without that scout. When comms restore, the system reconciles state and redistributes work across the reunified fleet. This directly mirrors how Mars rovers handle Earth-contact windows.
 
-**Fault injection framework** — a command-driven system that lets operators trigger specific faults (LiDAR occlusion, camera freeze, encoder drift, comms loss) on demand. This enables repeatable testing and live demonstration of the FDIR stack — the same approach NASA uses for mission software validation.
+**Fault injection framework**: a command-driven system that lets operators trigger specific faults (LiDAR occlusion, camera freeze, encoder drift, comms loss) on demand. This enables repeatable testing and live demonstration of the FDIR stack — the same approach NASA uses for mission software validation.
 
 ## System architecture
 
@@ -83,7 +83,7 @@ innate service view
 ```
 
 The robot's WebSocket server (`rws_server`) starts automatically on **port 9090**.
-The orchestrator and dashboard both connect to this — no extra launch needed.
+The orchestrator and dashboard both connect to this; no extra launch needed.
 
 **If you need rosbridge** (e.g. for raw roslibpy scripts or third-party tools), launch
 it inside the innate service tmux so it joins the Zenoh DDS mesh:
@@ -97,7 +97,7 @@ RMW_IMPLEMENTATION=rmw_zenoh_cpp ros2 launch rosbridge_server rosbridge_websocke
 > **Why inside tmux?** MARS uses Zenoh as its DDS layer. Nodes launched outside
 > the innate service tmux can't discover the Zenoh router and won't see topic data.
 
-### 2. Laptop — orchestrator
+### 2. Laptop (orchestrator)
 
 ```bash
 # From repo root
@@ -110,17 +110,17 @@ The orchestrator connects to `rws_server` on port 9090 (configured in
 `orchestrator/fleet_config.yaml`), starts the health monitor, Claude
 reasoner, and API server on port 8000.
 
-### 3. Laptop — dashboard
+### 3. Laptop (dashboard)
 
 ```bash
-cd lucas_dashboard
+cd dashboard
 pnpm install
 pnpm dev
 ```
 
 Open `http://localhost:5173`:
-- **Agent pages** — live camera feeds, telemetry, drive controls, IMU, LiDAR (direct to robot via port 9090)
-- **Mission page** (`/mission`) — Claude command input, fleet health, task assignments, event stream (via orchestrator API on port 8000)
+- **Agent pages**: live camera feeds, telemetry, drive controls, IMU, LiDAR (direct to robot via port 9090)
+- **Mission page** (`/mission`): Claude command input, fleet health, task assignments, event stream (via orchestrator API on port 8000)
 
 ## Robot connection details
 
@@ -189,14 +189,14 @@ need `innate build lmao_fdir`.
 
 ## Built with
 
-- [Innate MARS](https://docs.innate.bot) — robot platform (Jetson Orin Nano, ROS2 Humble, Zenoh DDS)
-- [Claude API](https://docs.anthropic.com) — mission planning and replanning via tool use
-- [Qwen2.5-VL](https://github.com/QwenLM/Qwen2.5-VL) — onboard vision-language model for visual perception
-- React + TanStack Router + Tailwind — mission control dashboard
+- [Innate MARS](https://docs.innate.bot): robot platform (Jetson Orin Nano, ROS2 Humble, Zenoh DDS)
+- [Claude API](https://docs.anthropic.com): mission planning and replanning via tool use
+- [Qwen2.5-VL](https://github.com/QwenLM/Qwen2.5-VL): onboard vision-language model for visual perception
+- React + TanStack Router + Tailwind: mission control dashboard
 
 ## References
 
-- `docs/REFERENCE.md` — verified MARS topics, rates, FDIR channel catalog
-- `docs/REACT_UI_INTEGRATION.md` — orchestrator API for dashboard
-- `tests/README.md` — platform validation checklist
+- `docs/REFERENCE.md`: verified MARS topics, rates, FDIR channel catalog
+- `docs/REACT_UI_INTEGRATION.md`: orchestrator API for dashboard
+- `tests/README.md`: platform validation checklist
 - Innate docs: https://docs.innate.bot
