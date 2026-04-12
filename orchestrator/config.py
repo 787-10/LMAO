@@ -22,7 +22,7 @@ MONITORED_TOPICS: dict[str, TopicDef] = {
     "/odom":           TopicDef("nav_msgs/msg/Odometry",                            expected_hz=None),
     "/amcl_pose":      TopicDef("geometry_msgs/msg/PoseWithCovarianceStamped",      expected_hz=None),
     "/battery_state":  TopicDef("sensor_msgs/msg/BatteryState",                     expected_hz=None),
-    "/scan":           TopicDef("sensor_msgs/msg/LaserScan",                        expected_hz=6.0),
+    "/scan":           TopicDef("sensor_msgs/msg/LaserScan",                        expected_hz=None),
     "/mars/arm/state": TopicDef("sensor_msgs/msg/JointState",                       expected_hz=None),
 }
 
@@ -56,10 +56,17 @@ class HealthConfig:
 
 
 @dataclass
+class LocalBrainConfig:
+    host: str = "localhost"
+    port: int = 8765
+
+
+@dataclass
 class HubConfig:
     fleet: list[RobotConfig]
     claude: ClaudeConfig
     health: HealthConfig
+    local_brain: LocalBrainConfig = field(default_factory=LocalBrainConfig)
 
 
 def load_config(path: str | Path | None = None) -> HubConfig:
@@ -82,5 +89,7 @@ def load_config(path: str | Path | None = None) -> HubConfig:
     claude = ClaudeConfig(**claude_raw)
     health_raw = raw.get("health", {})
     health = HealthConfig(**health_raw)
+    brain_raw = raw.get("local_brain", {})
+    local_brain = LocalBrainConfig(**brain_raw)
 
-    return HubConfig(fleet=fleet, claude=claude, health=health)
+    return HubConfig(fleet=fleet, claude=claude, health=health, local_brain=local_brain)

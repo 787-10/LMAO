@@ -224,9 +224,14 @@ def create_api(
         q = await broadcaster.add_client()
         try:
             while True:
-                msg = await asyncio.wait_for(q.get(), timeout=30.0)
-                await ws.send_json(msg)
-        except (WebSocketDisconnect, asyncio.TimeoutError, TimeoutError, Exception):
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=15.0)
+                    await ws.send_json(msg)
+                except (asyncio.TimeoutError, TimeoutError):
+                    # No events for 15s — send a keepalive ping so the
+                    # connection doesn't appear dead to the dashboard.
+                    await ws.send_json({"type": "ping", "timestamp": time.time()})
+        except (WebSocketDisconnect, Exception):
             pass
         finally:
             await broadcaster.remove_client(q)

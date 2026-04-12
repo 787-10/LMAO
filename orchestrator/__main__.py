@@ -101,8 +101,32 @@ async def async_main(config: HubConfig, *, sim_mode: bool = False, api_port: int
         conn = ConnectionManager(config.fleet)
 
     health = FleetHealthMonitor(conn, world, config.health)
-    reasoner = ClaudeReasoner(world, conn, health, config.claude)
+
+    # Connect to local vision brain (Qwen VLM)
+    from orchestrator.comms.local_brain_client import LocalBrainClient
+    brain_client = None
+    if config.local_brain:
+        brain_url = f"ws://{config.local_brain.host}:{config.local_brain.port}"
+        brain_client = LocalBrainClient(brain_url)
+        ok = await brain_client.connect()
+        status = "connected" if ok else "FAILED (will retry on first goal)"
+        print(f"  Local brain: {status} ({brain_url})")
+
+    reasoner = ClaudeReasoner(world, conn, health, config.claude, brain_client=brain_client)
     broadcaster = EventBroadcaster()
+
+    # Wire brain events into the dashboard event stream
+    if brain_client:
+        async def _on_brain_event(event_type: str, data: dict, timestamp: float) -> None:
+            await broadcaster.broadcast({
+                "type": f"BRAIN_{event_type.upper()}",
+                "robot": "mars-the-18th",
+                "data": data,
+                "timestamp": timestamp,
+            })
+
+        brain_client.on_brain_event = _on_brain_event
+
     repl = OperatorREPL(reasoner, world, health, simulator=simulator)
 
     # 2. Create FastAPI app
@@ -157,6 +181,8 @@ async def async_main(config: HubConfig, *, sim_mode: bool = False, api_port: int
         except asyncio.CancelledError:
             pass
         await api_task
+        if brain_client:
+            await brain_client.close()
         if simulator:
             await simulator.stop()
         await health.stop()

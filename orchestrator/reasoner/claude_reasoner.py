@@ -14,6 +14,7 @@ import anthropic
 
 from orchestrator.config import ClaudeConfig
 from orchestrator.comms.connection_manager import ConnectionManager
+from orchestrator.comms.local_brain_client import LocalBrainClient
 from orchestrator.health.fleet_monitor import FleetHealthMonitor
 from orchestrator.reasoner.mission import mission_summary
 from orchestrator.reasoner.tools import TOOLS
@@ -60,6 +61,22 @@ commanding a fleet of Innate MARS scout rovers from a base-station laptop.
 8. Prefer parallel task assignment when robots can work independently.
 9. If no robot can fulfil a task, say so clearly.
 
+## Vision Brain (Qwen VLM)
+- Each rover has a local vision brain (Qwen2.5-VL) that sees through the camera
+  and autonomously decides which skills to execute.
+- Use `dispatch_vision_goal` for tasks that need visual perception: finding objects,
+  approaching targets, visual exploration, describing surroundings.
+- Use `query_vision_brain` to check what the brain is currently doing.
+- Vision goals are fire-and-forget: the brain works autonomously until given a new goal.
+- To stop the vision brain, dispatch a goal like "stop and wait" or use stop_robot.
+- Use `execute_skill` for precise, known-parameter actions (arm moves, specific rotations).
+  Use `dispatch_vision_goal` for open-ended tasks where the robot needs to SEE and DECIDE
+  (e.g. "find the red cup", "explore the room", "go to the bottle").
+- IMPORTANT: `dispatch_vision_goal` uses a SEPARATE connection (port 8765) from the
+  rosbridge health monitor (port 9090). Even if rosbridge shows DEGRADED or LOCAL_ONLY,
+  you should STILL try `dispatch_vision_goal` — it may work fine. Do NOT refuse vision
+  goals based on rosbridge health status.
+
 ## Style
 - Be concise.  Respond with what you did and why.
 - When you assign tasks, state which robot got which task.
@@ -77,11 +94,13 @@ class ClaudeReasoner:
         conn: ConnectionManager,
         health: FleetHealthMonitor,
         config: ClaudeConfig,
+        brain_client: LocalBrainClient | None = None,
     ) -> None:
         self._world = world
         self._conn = conn
         self._health = health
         self._config = config
+        self._brain = brain_client
         self._client = anthropic.Anthropic()   # uses ANTHROPIC_API_KEY
         self._messages: list[dict[str, Any]] = []
         self._current_mission: MissionPlan | None = None
@@ -339,6 +358,8 @@ class ClaudeReasoner:
             "get_fleet_health": self._tool_get_fleet_health,
             "replan_mission": self._tool_replan_mission,
             "stop_robot": self._tool_stop_robot,
+            "dispatch_vision_goal": self._tool_dispatch_vision_goal,
+            "query_vision_brain": self._tool_query_vision_brain,
         }.get(name)
 
         if handler is None:
@@ -478,6 +499,48 @@ class ClaudeReasoner:
             )
 
         return {"robot": robot_name, "status": "stopped"}
+
+    # ------------------------------------------------------------------
+    # Vision brain tools
+    # ------------------------------------------------------------------
+
+    async def _tool_dispatch_vision_goal(self, args: dict) -> Any:
+        robot_name = args["robot_name"]
+        goal = args["goal"]
+
+        if self._brain is None:
+            return {"error": "Local brain client not configured"}
+
+        # NOTE: no health-tier gate here. The vision brain runs on the
+        # local Mac and talks to the robot via its own WS channel (port
+        # 8765), independent of the rosbridge connection (port 9090).
+        # Even if rosbridge shows LOCAL_ONLY, the brain may still work.
+
+        result = await self._brain.send_goal(goal)
+        return {
+            "robot": robot_name,
+            "goal": goal,
+            "status": "goal_dispatched" if result.get("success") else "failed",
+            "brain_ack": result.get("ack", ""),
+            "note": (
+                "The vision brain will autonomously work on this goal using "
+                "camera perception. The goal persists until replaced."
+            ),
+        }
+
+    async def _tool_query_vision_brain(self, args: dict) -> Any:
+        robot_name = args["robot_name"]
+
+        if self._brain is None:
+            return {"error": "Local brain client not configured"}
+
+        state = await self._brain.get_state()
+        return {
+            "robot": robot_name,
+            "brain_connected": state["connected"],
+            "current_goal": state["current_goal"],
+            "last_reply": state["last_reply"],
+        }
 
     # ------------------------------------------------------------------
     # Task execution helper
