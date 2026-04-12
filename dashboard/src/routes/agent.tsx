@@ -403,11 +403,11 @@ function RobotPosePanel({ url }: { url: string }) {
   const LINES = 9
 
   return (
-    <div className="tui-panel bg-card col-span-2 row-span-2">
+    <div className="tui-panel bg-card col-span-2">
       <PanelHeader title="POSE + ODOM" />
       <div className="flex">
-        <div className="flex-1 p-2">
-          <svg viewBox="0 0 400 280" className="w-full" style={{ minHeight: 220 }}>
+        <div className="flex-1 p-2" style={{ maxHeight: 320 }}>
+          <svg viewBox="0 0 400 280" className="w-full h-full" preserveAspectRatio="xMidYMid meet" style={{ maxHeight: 300 }}>
             <defs>
               <marker id="arrowHead" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
                 <path d="M0,0 L6,2 L0,4" fill="#5fafaf" opacity="0.7" />
@@ -658,9 +658,9 @@ function SkillsPanel({ url }: { url: string }) {
   const inputCls = 'w-14 bg-background border border-border px-1 py-0.5 text-[10px] font-mono focus:outline-none focus:border-term-cyan'
 
   return (
-    <div className="tui-panel bg-card flex flex-col col-span-2">
+    <div className="tui-panel bg-card flex flex-col col-span-2 row-span-2">
       <PanelHeader title="SKILLS" right={skills.length ? `${skills.length} available` : 'loading…'} />
-      <div className="flex flex-col divide-y text-xs max-h-72 overflow-y-auto">
+      <div className="flex flex-col divide-y text-xs max-h-48 overflow-y-auto">
         {skills.length === 0 && (
           <div className="px-3 py-3 text-muted-foreground">no skills received</div>
         )}
@@ -1656,30 +1656,18 @@ function LidarGroup({ url }: { url: string }) {
   )
 }
 
-// -- ported from lucas_dashboard: diagnostics / telemetry --
 
-function CmdVelPanel({ url }: { url: string }) {
-  const { data } = useRosbridgeTopic<{
-    linear?: { x: number; y: number; z: number }
-    angular?: { x: number; y: number; z: number }
-  }>(url, '/cmd_vel', 'geometry_msgs/msg/Twist', 200)
-  return (
-    <div className="tui-panel bg-card">
-      <PanelHeader title="CMD_VEL" />
-      <div className="p-2 text-xs space-y-1">
-        <TelemetryRow label="lin.x" value={formatNum(data?.linear?.x)} color="text-term-green" />
-        <TelemetryRow label="lin.y" value={formatNum(data?.linear?.y)} color="text-term-green" />
-        <TelemetryRow label="ang.z" value={formatNum(data?.angular?.z)} color="text-term-yellow" />
-      </div>
-    </div>
-  )
-}
-
-function SysStatsPanel({ url }: { url: string }) {
-  const { data } = useRosbridgeTopic<{ data?: string }>(url, '/robot/sys_stats', 'std_msgs/msg/String', 2000)
+function SystemStatsPanel({ url }: { url: string }) {
+  const { data: sysData } = useRosbridgeTopic<{ data?: string }>(url, '/robot/sys_stats', 'std_msgs/msg/String', 2000)
+  const { data: batData } = useRosbridgeTopic<{
+    voltage?: number
+    percentage?: number
+    current?: number
+    temperature?: number
+  }>(url, '/battery_state', 'sensor_msgs/msg/BatteryState', 1000)
 
   const stats = (() => {
-    try { return data?.data ? JSON.parse(data.data) : null } catch { return null }
+    try { return sysData?.data ? JSON.parse(sysData.data) : null } catch { return null }
   })()
 
   const cpuPct: number | null = stats?.gpu?.cpu_avg_pct ?? null
@@ -1688,6 +1676,11 @@ function SysStatsPanel({ url }: { url: string }) {
   const hottest: { zone: string; temp_c: number } | null = stats?.thermal?.hottest ?? null
   const load1m: number | null = stats?.cpu?.load_1m ?? null
   const powerMw: number | null = stats?.gpu?.power_mw ?? null
+
+  const batPct = batData?.percentage != null ? Math.round(batData.percentage * 100) : null
+  const voltage = batData?.voltage ?? null
+  const current = batData?.current ?? null
+  const batTemp = batData?.temperature ?? null
 
   const bar = (pct: number | null, danger = 80) => {
     const v = pct ?? 0
@@ -1699,10 +1692,40 @@ function SysStatsPanel({ url }: { url: string }) {
     )
   }
 
+  const batBarColor = batPct == null ? '#333'
+    : batPct > 60 ? '#5faf5f'
+      : batPct > 30 ? '#afaf5f'
+        : '#af5f5f'
+  const batPctColor = batPct == null ? 'text-muted-foreground'
+    : batPct > 60 ? 'text-term-green'
+      : batPct > 30 ? 'text-term-yellow'
+        : 'text-term-red'
+
   return (
     <div className="tui-panel bg-card">
-      <PanelHeader title="SYS STATS" right={stats ? 'live' : 'no data'} />
+      <PanelHeader title="SYSTEM STATS" right={batPct != null ? `bat ${batPct}%` : stats ? 'live' : 'no data'} />
       <div className="p-2 text-xs space-y-2">
+        {/* battery */}
+        <div>
+          <div className="flex justify-between mb-0.5">
+            <span className="text-muted-foreground">BAT</span>
+            <span className={batPctColor}>{batPct != null ? `${batPct}%` : '--'}</span>
+          </div>
+          <div className="h-1.5 w-full bg-muted rounded-sm overflow-hidden">
+            <div className="h-full rounded-sm transition-all" style={{ width: `${batPct ?? 0}%`, backgroundColor: batBarColor }} />
+          </div>
+        </div>
+        {(voltage != null || current != null || (batTemp != null && batTemp > 0)) && (
+          <div className="flex gap-3 text-[10px]">
+            {voltage != null && <span className="text-muted-foreground">V <span className="text-foreground">{voltage.toFixed(2)}</span></span>}
+            {current != null && <span className="text-muted-foreground">A <span className="text-foreground">{current.toFixed(2)}</span></span>}
+            {batTemp != null && batTemp > 0 && <span className="text-muted-foreground">T <span className={batTemp > 50 ? 'text-term-red' : 'text-foreground'}>{batTemp.toFixed(1)}{'\u00b0'}C</span></span>}
+          </div>
+        )}
+
+        <div className="border-t my-1" />
+
+        {/* system */}
         {stats ? <>
           <div>
             <div className="flex justify-between mb-0.5"><span className="text-muted-foreground">CPU</span><span className={cpuPct != null && cpuPct > 80 ? 'text-term-red' : 'text-term-green'}>{cpuPct != null ? `${cpuPct}%` : `load ${load1m?.toFixed(2) ?? '--'}`}</span></div>
@@ -1719,49 +1742,6 @@ function SysStatsPanel({ url }: { url: string }) {
           {hottest && <TelemetryRow label="temp" value={`${hottest.temp_c}\u00b0C (${hottest.zone})`} color={hottest.temp_c > 70 ? 'text-term-red' : hottest.temp_c > 50 ? 'text-term-yellow' : 'text-muted-foreground'} />}
           {powerMw != null && <TelemetryRow label="power" value={`${(powerMw / 1000).toFixed(1)} W`} />}
         </> : <span className="text-muted-foreground">run sys_stats_pub.py on robot</span>}
-      </div>
-    </div>
-  )
-}
-
-function BatteryPanel({ url }: { url: string }) {
-  const { data } = useRosbridgeTopic<{
-    voltage?: number
-    percentage?: number
-    current?: number
-    temperature?: number
-  }>(url, '/battery_state', 'sensor_msgs/msg/BatteryState', 1000)
-
-  const pct = data?.percentage != null ? Math.round(data.percentage * 100) : null
-  const voltage = data?.voltage ?? null
-  const current = data?.current ?? null
-  const temp = data?.temperature ?? null
-
-  const pctColor = pct == null ? 'text-muted-foreground'
-    : pct > 60 ? 'text-term-green'
-      : pct > 30 ? 'text-term-yellow'
-        : 'text-term-red'
-
-  const barWidth = pct ?? 0
-  const barColor = pct == null ? '#333'
-    : pct > 60 ? '#5faf5f'
-      : pct > 30 ? '#afaf5f'
-        : '#af5f5f'
-
-  return (
-    <div className="tui-panel bg-card">
-      <PanelHeader title="BATTERY" right={pct != null ? `${pct}%` : '--'} />
-      <div className="p-2 space-y-2">
-        <div className="h-2 w-full bg-muted rounded-sm overflow-hidden">
-          <div className="h-full rounded-sm transition-all" style={{ width: `${barWidth}%`, backgroundColor: barColor }} />
-        </div>
-        <div className="text-xs space-y-1">
-          <TelemetryRow label="voltage" value={voltage != null ? `${voltage.toFixed(2)} V` : '--'} color={pctColor} />
-          <TelemetryRow label="current" value={current != null ? `${current.toFixed(2)} A` : '--'} />
-          {temp != null && temp > 0 && (
-            <TelemetryRow label="temp" value={`${temp.toFixed(1)} \u00b0C`} color={temp > 50 ? 'text-term-red' : 'text-term-yellow'} />
-          )}
-        </div>
       </div>
     </div>
   )
@@ -1820,30 +1800,6 @@ function ImuAccelPanel({ url }: { url: string }) {
         </> : (
           <div className="text-muted-foreground text-center py-2">no data</div>
         )}
-      </div>
-    </div>
-  )
-}
-
-// -- TTS play/stop control + input config --
-
-function TTSControlPanel({ url }: { url: string }) {
-  return (
-    <div className="tui-panel bg-card">
-      <PanelHeader title="TTS CONTROL" />
-      <div className="p-2 flex gap-1">
-        <button
-          onClick={() => publishRosbridge(url, '/tts/is_playing', 'std_msgs/msg/Bool', { data: true })}
-          className="text-xs px-2 py-1 bg-secondary text-secondary-foreground hover:bg-accent flex-1"
-        >
-          play
-        </button>
-        <button
-          onClick={() => publishRosbridge(url, '/tts/is_playing', 'std_msgs/msg/Bool', { data: false })}
-          className="text-xs px-2 py-1 bg-secondary text-secondary-foreground hover:bg-accent flex-1"
-        >
-          stop
-        </button>
       </div>
     </div>
   )
@@ -2285,9 +2241,9 @@ function AgentPage() {
         {url && <LidarGroup url={url} />}
       </div>
 
-      {/* telemetry grid */}
+      {/* telemetry grid: visualizations + readouts */}
       {url && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 auto-rows-min">
           <div className="tui-panel bg-card flex flex-col">
             <PanelHeader title="ENCODER ODOM" right="map frame /amcl_pose" />
             <div className="p-1 aspect-square">
@@ -2295,35 +2251,22 @@ function AgentPage() {
             </div>
           </div>
           <ImuAccelPanel url={url} />
-          <BatteryPanel url={url} />
-          <SysStatsPanel url={url} />
+          <SystemStatsPanel url={url} />
           <DrivePanel url={url} />
-          <CmdVelPanel url={url} />
           <SkillsPanel url={url} />
           <LidarVisionCheck url={url} />
           <OdomFdirPanel url={url} />
           <RobotPosePanel url={url} />
-        </div>
-      )}
-
-      {/* controls */}
-      {url && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-          <GotoPanel url={url} />
-          <SkillUpdatePanel url={url} />
-          <TTSControlPanel url={url} />
+          <DepthCloudPanel url={url} />
+          <div className="flex flex-col gap-3">
+            <GotoPanel url={url} />
+            <SkillUpdatePanel url={url} />
+          </div>
         </div>
       )}
 
       {/* chat */}
       {url && <ChatPanel url={url} />}
-
-      {/* depth cloud */}
-      {url && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          <DepthCloudPanel url={url} />
-        </div>
-      )}
 
       {/* event log */}
       <div className="tui-panel bg-card flex flex-col">
