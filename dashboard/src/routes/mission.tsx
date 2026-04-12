@@ -285,7 +285,23 @@ function CommandPanel({ events }: { events: WorldEvent[] }) {
           )
         })}
       </div>
-      <div className="border-t p-2 flex gap-1">
+      <div className="border-t px-2 pt-2 flex gap-1">
+        <button
+          onClick={() => setInput('check if scout 18 is stuck if stuck send a solution')}
+          disabled={pending}
+          className="text-[10px] px-2 py-0.5 bg-secondary text-muted-foreground hover:text-foreground hover:bg-accent border border-border disabled:opacity-50"
+        >
+          recovery
+        </button>
+        <button
+          onClick={() => setInput('scout b found resources at 0.7, 0.6. send scout 18 there to investigate')}
+          disabled={pending}
+          className="text-[10px] px-2 py-0.5 bg-secondary text-muted-foreground hover:text-foreground hover:bg-accent border border-border disabled:opacity-50"
+        >
+          navigate
+        </button>
+      </div>
+      <div className="p-2 flex gap-1">
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}

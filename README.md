@@ -71,6 +71,8 @@ Scout rovers (Innate MARS)
     └── Comms fallback mode
 ```
 
+![dashboard](./dashboard.png)
+
 ## Quick start
 
 ### 1. Robot setup (after battery connect / reboot)

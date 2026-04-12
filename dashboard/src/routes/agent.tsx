@@ -526,7 +526,51 @@ const CRITICAL_PATTERNS: { kind: AlertKind; re: RegExp }[] = [
   { kind: 'critical', re: /\b(critical|fatal|hardware[\s_-]?fail|sensor[\s_-]?fail|emergenc)/i },
 ]
 
+interface ParsedFault {
+  kind: AlertKind
+  message: string
+}
+
+// Handles skill responses that encode a structured verdict as JSON in `message`,
+// e.g. lidar_cross_validate returns:
+//   {"verdict":"lidar_fault","message":"Lidar fault detected...","anomaly":{...}}
+function parseStructuredFault(message: string): ParsedFault | null {
+  const trimmed = message.trim()
+  if (!trimmed.startsWith('{')) return null
+  try {
+    const obj = JSON.parse(trimmed) as Record<string, unknown>
+    const verdict = typeof obj.verdict === 'string' ? obj.verdict : ''
+    if (!verdict || !/fault|fail|error/i.test(verdict)) return null
+    let kind: AlertKind = 'critical'
+    if (/imu/i.test(verdict)) kind = 'imu'
+    else if (/lidar|scan|laser/i.test(verdict)) kind = 'lidar'
+    const baseMsg = typeof obj.message === 'string' ? obj.message : verdict
+    const extras: string[] = []
+    const anomaly = obj.anomaly as Record<string, unknown> | undefined
+    if (anomaly) {
+      const parts: string[] = []
+      if (typeof anomaly.angle_deg === 'number') parts.push(`angle=${anomaly.angle_deg.toFixed(1)}\u00b0`)
+      if (typeof anomaly.range_m === 'number') parts.push(`range=${anomaly.range_m.toFixed(2)}m`)
+      if (typeof anomaly.cluster_size === 'number') parts.push(`cluster=${anomaly.cluster_size}`)
+      if (typeof anomaly.scans_used === 'number') parts.push(`scans=${anomaly.scans_used}`)
+      if (parts.length > 0) extras.push(`anomaly: ${parts.join(', ')}`)
+    }
+    if (typeof obj.depth_min_m === 'number') extras.push(`depth_min=${obj.depth_min_m.toFixed(2)}m`)
+    return {
+      kind,
+      message: extras.length ? `${baseMsg}  [${extras.join('; ')}]` : baseMsg,
+    }
+  } catch {
+    return null
+  }
+}
+
 function detectCriticalKind(message: string, ok: boolean): AlertKind | null {
+  // structured faults (e.g. lidar_cross_validate) may come back with
+  // `success=true` — the check RAN successfully but the verdict is a fault.
+  // Always inspect the JSON verdict first, regardless of ok.
+  const structured = parseStructuredFault(message)
+  if (structured) return structured.kind
   if (ok) return null
   for (const p of CRITICAL_PATTERNS) {
     if (p.re.test(message)) return p.kind
@@ -649,9 +693,19 @@ function SkillsPanel({ url, onAlert }: { url: string; onAlert?: (a: Omit<Critica
   const [results, setResults] = useState<Record<string, SkillResult>>({})
   const [params, setParams] = useState<Record<string, Record<string, string>>>({})
 
-  const skills = (data?.skills ?? []).sort((a, b) =>
-    (a.name ?? '').toLowerCase().localeCompare((b.name ?? '').toLowerCase()),
-  )
+  const skills = (() => {
+    const seen = new Set<string>()
+    const deduped: typeof data.skills = []
+    for (const sk of data?.skills ?? []) {
+      const id = sk.id ?? sk.skill_type ?? sk.name ?? ''
+      if (seen.has(id)) continue
+      seen.add(id)
+      deduped.push(sk)
+    }
+    return deduped.sort((a, b) =>
+      (a.name ?? '').toLowerCase().localeCompare((b.name ?? '').toLowerCase()),
+    )
+  })()
 
   function setParam(skillId: string, key: string, value: string) {
     setParams(p => ({ ...p, [skillId]: { ...p[skillId], [key]: value } }))
@@ -673,6 +727,7 @@ function SkillsPanel({ url, onAlert }: { url: string; onAlert?: (a: Omit<Critica
     }
 
     sendActionGoal(url, skillId, (ok, message) => {
+      const structured = parseStructuredFault(message)
       const kind = detectCriticalKind(message, ok)
       if (kind && onAlert) {
         const sk = skills.find(s => (s.id ?? s.skill_type) === skillId)
@@ -680,7 +735,7 @@ function SkillsPanel({ url, onAlert }: { url: string; onAlert?: (a: Omit<Critica
           kind,
           source: skillId,
           sourceLabel: `skill: ${sk?.display_name ?? sk?.name ?? skillId}`,
-          message,
+          message: structured?.message ?? message,
         })
         setResults((r) => ({ ...r, [skillId]: { ok, message: `${kind.toUpperCase()} fault — see alerts`, ts: new Date().toLocaleTimeString() } }))
       } else {
