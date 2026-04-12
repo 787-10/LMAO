@@ -95,14 +95,173 @@ class ClaudeReasoner:
         return await self._run_loop()
 
     async def handle_health_event(self, event: WorldEvent) -> str:
-        """Called by the event loop when a health transition occurs."""
-        desc = (
-            f"[HEALTH ALERT] Robot '{event.robot}' transitioned to "
-            f"{event.data.get('new_tier', '?')}.  "
-            f"Previous: {event.data.get('old_tier', '?')}.  "
-            f"Topic health: {event.data.get('topic_health', {})}."
+        """Called by the event loop when a health transition occurs.
+
+        Builds a rich prompt with affected tasks, remaining objectives,
+        and available fleet so Claude can make informed replan decisions.
+        """
+        robot_name = event.robot
+        new_tier = event.data.get("new_tier", "?")
+        old_tier = event.data.get("old_tier", "?")
+        topic_health = event.data.get("topic_health", {})
+
+        # Gather context for Claude
+        rs = await self._world.get_robot_state(robot_name)
+        affected_tasks = await self._world.get_tasks_for_robot(robot_name)
+        available = await self._world.get_available_robots()
+        health_report = self._health.get_health_report()
+
+        # Build affected-tasks summary
+        affected_lines = []
+        for t in affected_tasks:
+            if t.status.value in ("PENDING", "IN_PROGRESS"):
+                affected_lines.append(
+                    f"  - [{t.id}] {t.task_type.value}: {t.description} "
+                    f"(status={t.status.value}, target={t.target})"
+                )
+        affected_str = "\n".join(affected_lines) if affected_lines else "  (none)"
+
+        # Build fleet health summary
+        fleet_health_lines = []
+        for name, info in health_report.items():
+            rates = ", ".join(f"{t}={r}Hz" for t, r in info.get("topic_rates_hz", {}).items())
+            fleet_health_lines.append(f"  {name}: {info['tier']} | {rates}")
+        fleet_health_str = "\n".join(fleet_health_lines)
+
+        # Identify what capability was lost
+        failed_sensors = [
+            t for t, h in topic_health.items() if h in ("FAILED", "DEGRADED")
+        ]
+        capability_impact = ""
+        if "/scan" in failed_sensors:
+            capability_impact += "LiDAR is down — robot cannot scan or navigate safely. "
+        if "/odom" in failed_sensors:
+            capability_impact += "Odometry is down — robot position is unreliable. "
+        if not failed_sensors and new_tier == "LOCAL_ONLY":
+            capability_impact = "Comms blackout — robot is operating on last-known mission parameters. Hub cannot send new commands until comms restore. "
+        if new_tier == "SAFE_MODE":
+            capability_impact += "Multiple failures or low battery — robot should not accept new tasks. "
+        if new_tier == "HIBERNATION":
+            capability_impact += "Robot is unreachable or critically low battery — treat as unavailable. "
+
+        prompt = (
+            f"[FAULT ESCALATION — REPLAN REQUIRED]\n"
+            f"\n"
+            f"Robot '{robot_name}' has degraded: {old_tier} → {new_tier}\n"
+            f"Failed/degraded sensors: {failed_sensors or 'none (comms-level fault)'}\n"
+            f"Impact: {capability_impact}\n"
+            f"\n"
+            f"Tasks currently assigned to {robot_name}:\n{affected_str}\n"
+            f"\n"
+            f"Available robots for reassignment: {available}\n"
+            f"\n"
+            f"Fleet health:\n{fleet_health_str}\n"
+            f"\n"
+            f"Given the remaining mission objectives and available resources, "
+            f"provide updated task assignments. If {robot_name} has in-progress "
+            f"tasks, reassign them to healthy robots. If no robot can fulfil a "
+            f"task, mark it and explain why."
         )
-        return await self.process_command(desc)
+        return await self.process_command(prompt)
+
+    async def handle_comms_lost(self, event: WorldEvent) -> str:
+        """Called when a scout loses contact with the hub.
+
+        The scout falls back to its last-known mission parameters and local
+        FDIR.  The hub replans without that scout — treating it as temporarily
+        unavailable.
+        """
+        robot_name = event.robot
+        last_pos = event.data.get("robot_last_position")
+        last_task = event.data.get("robot_last_task")
+        last_contact = event.data.get("last_contact_ago_s", "?")
+
+        affected_tasks = await self._world.get_tasks_for_robot(robot_name)
+        available = await self._world.get_available_robots()
+        # The lost robot is NOT in the available list (it's LOCAL_ONLY now)
+
+        affected_lines = []
+        for t in affected_tasks:
+            if t.status.value in ("PENDING", "IN_PROGRESS"):
+                affected_lines.append(
+                    f"  - [{t.id}] {t.task_type.value}: {t.description} "
+                    f"(status={t.status.value})"
+                )
+        affected_str = "\n".join(affected_lines) if affected_lines else "  (none)"
+
+        prompt = (
+            f"[COMMS BLACKOUT — REPLAN WITHOUT {robot_name.upper()}]\n"
+            f"\n"
+            f"Contact lost with '{robot_name}' {last_contact}s ago.\n"
+            f"Last known position: {last_pos}\n"
+            f"Last assigned task: {last_task}\n"
+            f"\n"
+            f"The robot is now operating autonomously on its last-known mission "
+            f"parameters with local FDIR. It cannot receive new commands until "
+            f"comms are restored.\n"
+            f"\n"
+            f"Tasks that were assigned to {robot_name}:\n{affected_str}\n"
+            f"\n"
+            f"Available robots: {available}\n"
+            f"\n"
+            f"Replan the mission WITHOUT {robot_name}. Reassign its pending/"
+            f"in-progress tasks to available robots. Do NOT assign any new tasks "
+            f"to {robot_name} until comms are restored."
+        )
+        return await self.process_command(prompt)
+
+    async def handle_comms_restored(self, event: WorldEvent) -> str:
+        """Called when a scout regains contact with the hub.
+
+        The scout uploads its local state.  The hub reconciles the world
+        model and asks Claude to replan with the reunified fleet.
+        """
+        robot_name = event.robot
+        blackout_duration = event.data.get("blackout_duration_s", "?")
+        current_pos = event.data.get("robot_position")
+        current_battery = event.data.get("robot_battery")
+        current_task = event.data.get("robot_task")
+
+        # Get the robot's current state (just updated by restored telemetry)
+        rs = await self._world.get_robot_state(robot_name)
+        available = await self._world.get_available_robots()
+        health_report = self._health.get_health_report()
+
+        # What tasks are still pending across the fleet?
+        all_tasks_lines = []
+        if self._current_mission:
+            for t in self._current_mission.tasks:
+                if t.status.value in ("PENDING", "IN_PROGRESS"):
+                    all_tasks_lines.append(
+                        f"  - [{t.id}] {t.task_type.value}: {t.description} "
+                        f"(status={t.status.value}, robot={t.assigned_robot or 'unassigned'})"
+                    )
+        remaining_str = "\n".join(all_tasks_lines) if all_tasks_lines else "  (none)"
+
+        robot_health = health_report.get(robot_name, {})
+
+        prompt = (
+            f"[COMMS RESTORED — RECONCILE AND REPLAN]\n"
+            f"\n"
+            f"Contact restored with '{robot_name}' after {blackout_duration}s blackout.\n"
+            f"Robot's current state:\n"
+            f"  Position: {current_pos}\n"
+            f"  Battery: {current_battery}%\n"
+            f"  Health tier: {rs.health_tier.value if rs else '?'}\n"
+            f"  Topic rates: {robot_health.get('topic_rates_hz', {})}\n"
+            f"  Last task it was working on: {current_task}\n"
+            f"\n"
+            f"Available robots (now including {robot_name}): {available}\n"
+            f"\n"
+            f"Remaining mission tasks:\n{remaining_str}\n"
+            f"\n"
+            f"Reconcile: {robot_name} is back online. Check if it completed "
+            f"its previous task during the blackout (based on its current "
+            f"position vs task target). Replan the mission with the full "
+            f"fleet. Redistribute work if {robot_name} is healthy enough to "
+            f"take on new tasks."
+        )
+        return await self.process_command(prompt)
 
     # ------------------------------------------------------------------
     # Claude API loop
