@@ -1,12 +1,8 @@
 fleet:
-  - name: scout-1
-    host: 192.168.1.42
-    port: 9090
+  - name: mars-the-18th
+    host: 172.17.30.66
+    port: 9091
     capabilities: [navigate, manipulate, scan]
-  - name: scout-2
-    host: 192.168.1.43
-    port: 9090
-    capabilities: [navigate, scan]
 
 claude:
   model: claude-sonnet-4-20250514
