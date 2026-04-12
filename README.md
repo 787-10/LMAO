@@ -189,7 +189,6 @@ need `innate build lmao_fdir`.
 - [Claude API](https://docs.anthropic.com) — mission planning and replanning via tool use
 - [Qwen2.5-VL](https://github.com/QwenLM/Qwen2.5-VL) — onboard vision-language model for visual perception
 - React + TanStack Router + Tailwind — mission control dashboard
-- RoboHacks 2026
 
 ## References
 
