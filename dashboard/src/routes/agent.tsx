@@ -363,16 +363,14 @@ function Robot3D({ yaw, linX }: { yaw: number; linX: number; angZ: number }) {
   )
 }
 
-function RobotPosePanel({ url }: { url: string }) {
+function PoseOdomReadout({ url }: { url: string }) {
   const { data: poseData } = useRosbridgeTopic<{
     pose?: { pose?: { position?: { x: number; y: number; z: number }; orientation?: { x: number; y: number; z: number; w: number } } }
   }>(url, '/amcl_pose', 'geometry_msgs/msg/PoseWithCovarianceStamped', 500)
-
   const { data: odomData } = useRosbridgeTopic<{
     twist?: { twist?: { linear?: { x: number; y: number }; angular?: { z: number } } }
     pose?: { pose?: { position?: { x: number; y: number } } }
   }>(url, '/odom', 'nav_msgs/msg/Odometry', 200)
-
   const { data: cmdVelData } = useRosbridgeTopic<{
     linear?: { x: number; y: number; z: number }
     angular?: { x: number; y: number; z: number }
@@ -382,133 +380,41 @@ function RobotPosePanel({ url }: { url: string }) {
   const ori = poseData?.pose?.pose?.orientation ?? { x: 0, y: 0, z: 0, w: 1 }
   const lin = odomData?.twist?.twist?.linear ?? { x: 0, y: 0 }
   const ang = odomData?.twist?.twist?.angular ?? { z: 0 }
-  const odomPos = odomData?.pose?.pose?.position
-
   const yaw = quatToYaw(ori)
 
-  // viewBox dimensions
-  const CX = 200, CY = 140
-  // map +-5m world range to +-96 iso units (grid 20% larger)
-  const S = 19.2
-  const gx = Math.max(-5, Math.min(5, pos.x)) * S
-  const gy = Math.max(-5, Math.min(5, pos.y)) * S
-  const gz = Math.max(-2, Math.min(2, pos.z)) * 12
-
-  const projected = isoProject(gx, gy, gz)
-  const robotX = CX + projected.sx
-  const robotY = CY + projected.sy
-
-  // grid spans +-96 iso units
-  const GRID = 96
-  const LINES = 9
+  const Col = ({ label, children }: { label: string; children: React.ReactNode }) => (
+    <div className="flex-1 min-w-[90px] flex flex-col gap-0.5">
+      <div className="text-muted-foreground text-[9px] border-b pb-0.5">{label}</div>
+      <div className="text-[10px] font-mono space-y-0.5">{children}</div>
+    </div>
+  )
+  const Row = ({ label, value, color }: { label: string; value: string; color?: string }) => (
+    <div className="flex justify-between gap-1">
+      <span className="text-muted-foreground">{label}</span>
+      <span className={color ?? 'text-foreground'}>{value}</span>
+    </div>
+  )
 
   return (
-    <div className="tui-panel bg-card">
-      <PanelHeader title="POSE + ODOM" />
-      <div className="flex">
-        <div className="flex-1 p-2" style={{ maxHeight: 320 }}>
-          <svg viewBox="0 0 400 280" className="w-full h-full" preserveAspectRatio="xMidYMid meet" style={{ maxHeight: 300 }}>
-            <defs>
-              <marker id="arrowHead" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
-                <path d="M0,0 L6,2 L0,4" fill="#5fafaf" opacity="0.7" />
-              </marker>
-            </defs>
-
-            {/* isometric ground grid */}
-            {Array.from({ length: LINES }, (_, i) => {
-              const v = ((i - (LINES - 1) / 2) / ((LINES - 1) / 2)) * GRID
-              const a = isoProject(v, -GRID, 0)
-              const b = isoProject(v, GRID, 0)
-              return <line key={`gx${i}`} x1={CX + a.sx} y1={CY + a.sy} x2={CX + b.sx} y2={CY + b.sy}
-                stroke="#5f87af" strokeWidth={0.4} opacity={i === (LINES - 1) / 2 ? 0.35 : 0.15} />
-            })}
-            {Array.from({ length: LINES }, (_, i) => {
-              const v = ((i - (LINES - 1) / 2) / ((LINES - 1) / 2)) * GRID
-              const a = isoProject(-GRID, v, 0)
-              const b = isoProject(GRID, v, 0)
-              return <line key={`gy${i}`} x1={CX + a.sx} y1={CY + a.sy} x2={CX + b.sx} y2={CY + b.sy}
-                stroke="#5f87af" strokeWidth={0.4} opacity={i === (LINES - 1) / 2 ? 0.35 : 0.15} />
-            })}
-
-            {/* origin axes */}
-            {(() => {
-              const o = isoProject(0, 0, 0)
-              const ax = isoProject(20, 0, 0)
-              const ay = isoProject(0, 20, 0)
-              const az = isoProject(0, 0, 20)
-              return (
-                <>
-                  <line x1={CX + o.sx} y1={CY + o.sy} x2={CX + ax.sx} y2={CY + ax.sy} stroke="#d75f5f" strokeWidth={1} opacity={0.5} />
-                  <text x={CX + ax.sx + 4} y={CY + ax.sy + 1} fontSize={8} fill="#d75f5f" opacity={0.6} fontFamily="monospace">X</text>
-                  <line x1={CX + o.sx} y1={CY + o.sy} x2={CX + ay.sx} y2={CY + ay.sy} stroke="#5faf5f" strokeWidth={1} opacity={0.5} />
-                  <text x={CX + ay.sx - 10} y={CY + ay.sy + 1} fontSize={8} fill="#5faf5f" opacity={0.6} fontFamily="monospace">Y</text>
-                  <line x1={CX + o.sx} y1={CY + o.sy} x2={CX + az.sx} y2={CY + az.sy} stroke="#5fafaf" strokeWidth={1} opacity={0.5} />
-                  <text x={CX + az.sx + 4} y={CY + az.sy + 1} fontSize={8} fill="#5fafaf" opacity={0.6} fontFamily="monospace">Z</text>
-                </>
-              )
-            })()}
-
-            {/* ground shadow */}
-            {(() => {
-              const sh = isoProject(gx, gy, 0)
-              return <ellipse cx={CX + sh.sx} cy={CY + sh.sy} rx={8} ry={3} fill="#5f87af" opacity={0.08} />
-            })()}
-
-            {/* heading line on ground plane */}
-            {(() => {
-              const from = isoProject(gx, gy, 0)
-              const to = isoProject(gx + Math.cos(yaw) * 20, gy + Math.sin(yaw) * 20, 0)
-              return <line x1={CX + from.sx} y1={CY + from.sy} x2={CX + to.sx} y2={CY + to.sy}
-                stroke="#afaf5f" strokeWidth={0.8} strokeDasharray="4 3" opacity={0.3} />
-            })()}
-
-            {/* velocity vector */}
-            {Math.abs(lin.x) > 0.01 && (() => {
-              const from = isoProject(gx, gy, 0)
-              const to = isoProject(gx + Math.cos(yaw) * lin.x * 30, gy + Math.sin(yaw) * lin.x * 30, 0)
-              return <line x1={CX + from.sx} y1={CY + from.sy} x2={CX + to.sx} y2={CY + to.sy}
-                stroke="#5faf5f" strokeWidth={1.2} opacity={0.7} markerEnd="url(#arrowHead)" />
-            })()}
-
-            {/* 3D robot */}
-            <g transform={`translate(${robotX}, ${robotY})`}>
-              <Robot3D yaw={yaw} linX={lin.x} angZ={ang.z} />
-            </g>
-
-            {/* position label */}
-            <text x={robotX} y={robotY + 18} fontSize={8} fill="#5fafaf" textAnchor="middle" fontFamily="monospace" opacity={0.6}>
-              ({formatNum(pos.x, 2)}, {formatNum(pos.y, 2)}, {formatNum(pos.z, 2)})
-            </text>
-          </svg>
-        </div>
-
-        {/* telemetry readout */}
-        <div className="w-36 border-l p-2 text-xs space-y-1">
-          <div className="text-muted-foreground text-[10px] border-b pb-1 mb-1">POSE /amcl_pose</div>
-          <TelemetryRow label="x" value={formatNum(pos.x)} color="text-term-cyan" />
-          <TelemetryRow label="y" value={formatNum(pos.y)} color="text-term-cyan" />
-          <TelemetryRow label="z" value={formatNum(pos.z)} color="text-term-cyan" />
-          <TelemetryRow label="yaw" value={formatNum(yaw * 180 / Math.PI, 1) + '\u00b0'} color="text-term-yellow" />
-          <div className="border-t pt-1 mt-1" />
-          <div className="text-muted-foreground text-[10px] border-b pb-1 mb-1">ODOM /odom</div>
-          {odomPos && <>
-            <TelemetryRow label="pos.x" value={formatNum(odomPos.x)} />
-            <TelemetryRow label="pos.y" value={formatNum(odomPos.y)} />
-          </>}
-          <TelemetryRow label="lin.x" value={formatNum(lin.x)} color="text-term-green" />
-          <TelemetryRow label="lin.y" value={formatNum(lin.y)} color="text-term-green" />
-          <TelemetryRow label="ang.z" value={formatNum(ang.z)} color="text-term-yellow" />
-          <div className="border-t pt-1 mt-1" />
-          <div className="text-muted-foreground text-[10px] border-b pb-1 mb-1">CMD_VEL</div>
-          <TelemetryRow label="lin.x" value={formatNum(cmdVelData?.linear?.x)} color="text-term-green" />
-          <TelemetryRow label="lin.y" value={formatNum(cmdVelData?.linear?.y)} color="text-term-green" />
-          <TelemetryRow label="ang.z" value={formatNum(cmdVelData?.angular?.z)} color="text-term-yellow" />
-        </div>
-      </div>
+    <div className="flex flex-wrap gap-3 border-t pt-2 px-2 pb-2 text-xs">
+      <Col label="POSE /amcl_pose">
+        <Row label="x" value={formatNum(pos.x)} color="text-term-cyan" />
+        <Row label="y" value={formatNum(pos.y)} color="text-term-cyan" />
+        <Row label="yaw" value={formatNum(yaw * 180 / Math.PI, 1) + '\u00b0'} color="text-term-yellow" />
+      </Col>
+      <Col label="ODOM /odom">
+        <Row label="lin.x" value={formatNum(lin.x)} color="text-term-green" />
+        <Row label="lin.y" value={formatNum(lin.y)} color="text-term-green" />
+        <Row label="ang.z" value={formatNum(ang.z)} color="text-term-yellow" />
+      </Col>
+      <Col label="CMD_VEL">
+        <Row label="lin.x" value={formatNum(cmdVelData?.linear?.x)} color="text-term-green" />
+        <Row label="lin.y" value={formatNum(cmdVelData?.linear?.y)} color="text-term-green" />
+        <Row label="ang.z" value={formatNum(cmdVelData?.angular?.z)} color="text-term-yellow" />
+      </Col>
     </div>
   )
 }
-
 
 
 interface HeadState {
@@ -661,7 +567,7 @@ function SkillsPanel({ url }: { url: string }) {
   const inputCls = 'w-14 bg-background border border-border px-1 py-0.5 text-[10px] font-mono focus:outline-none focus:border-term-cyan'
 
   return (
-    <div className="tui-panel bg-card flex flex-col col-span-2">
+    <div className="tui-panel bg-card flex flex-col col-span-full sm:col-span-2 md:col-span-3 lg:col-span-2">
       <PanelHeader title="SKILLS" right={skills.length ? `${skills.length} available` : 'loading…'} />
       <div className="flex flex-col divide-y text-xs max-h-128 overflow-y-auto">
         {skills.length === 0 && (
@@ -912,7 +818,7 @@ function DrivePanel({ url }: { url: string }) {
   const ang = (k.a ? 1 : 0) - (k.d ? 1 : 0)
 
   return (
-    <div className="tui-panel bg-card">
+    <div className="tui-panel bg-card flex flex-col">
       <PanelHeader title="DRIVE" />
       <div className="p-4 flex flex-col items-center justify-center gap-3">
         <button
@@ -950,6 +856,9 @@ function DrivePanel({ url }: { url: string }) {
         <div className="text-[10px] text-muted-foreground">
           lin:{(lin * LIN_SPEED).toFixed(1)} ang:{(ang * ANG_SPEED).toFixed(1)}
         </div>
+      </div>
+      <div className="mt-auto">
+        <PoseOdomReadout url={url} />
       </div>
     </div>
   )
@@ -1319,6 +1228,10 @@ function LiveLocationTrack({ url }: { url: string }) {
   const { data: amcl } = useRosbridgeTopic<Record<string, unknown>>(url, '/amcl_pose', 'geometry_msgs/msg/PoseWithCovarianceStamped', 200)
   const trailRef = useRef<{ x: number; y: number }[]>([])
   const [, setTick] = useState(0)
+  const [waypointMode, setWaypointMode] = useState(false)
+  const [waypoint, setWaypoint] = useState<{ x: number; y: number } | null>(null)
+  const [navStatus, setNavStatus] = useState<string | null>(null)
+  const svgRef = useRef<SVGSVGElement>(null)
 
   const poseData = amcl as { pose?: { pose?: { position?: { x: number; y: number }; orientation?: { x: number; y: number; z: number; w: number } } } } | null
   const rawPos = poseData?.pose?.pose?.position
@@ -1344,6 +1257,27 @@ function LiveLocationTrack({ url }: { url: string }) {
     sy: 50 - wy * scale,   // flip Y
   })
 
+  function handleGridClick(e: React.MouseEvent<SVGSVGElement>) {
+    if (!waypointMode) return
+    const svg = svgRef.current
+    if (!svg) return
+    const pt = svg.createSVGPoint()
+    pt.x = e.clientX
+    pt.y = e.clientY
+    const ctm = svg.getScreenCTM()
+    if (!ctm) return
+    const svgPt = pt.matrixTransform(ctm.inverse())
+    // svgPt in 0..100 coords; convert back to world
+    const wx = (svgPt.x - 50) / scale
+    const wy = -(svgPt.y - 50) / scale   // flip Y back
+    setWaypoint({ x: wx, y: wy })
+    setNavStatus('sending…')
+    sendActionGoal(url, 'innate-os/navigate_to_position', (ok, message) => {
+      setNavStatus(ok ? 'arrived' : `failed: ${message || 'error'}`)
+      setTimeout(() => setNavStatus(null), 4000)
+    }, { x: wx, y: wy, theta: 0 })
+  }
+
   let yaw = 0
   if (rawOri) {
     const o = rawOri
@@ -1352,6 +1286,7 @@ function LiveLocationTrack({ url }: { url: string }) {
 
   const trail = trailRef.current
   const robotSvg = rx !== null ? toSvg(rx, ry!) : null
+  const waypointSvg = waypoint ? toSvg(waypoint.x, waypoint.y) : null
 
   // grid lines at integer meters relative to origin
   const gridLines = []
@@ -1374,30 +1309,71 @@ function LiveLocationTrack({ url }: { url: string }) {
   }
 
   return (
-    <svg viewBox="0 0 100 100" className="w-full h-full" preserveAspectRatio="xMidYMid meet">
-      {gridLines}
-      {/* trail */}
-      {trail.length > 1 && trail.slice(0, -1).map((p, i) => {
-        const { sx: x1, sy: y1 } = toSvg(p.x, p.y)
-        const { sx: x2, sy: y2 } = toSvg(trail[i + 1].x, trail[i + 1].y)
-        return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#5f87af" strokeWidth={1} opacity={0.2 + (i / trail.length) * 0.7} />
-      })}
-      {/* robot dot */}
-      {robotSvg ? <>
-        <circle cx={robotSvg.sx} cy={robotSvg.sy} r={3} fill="#5f87af" />
-        <line
-          x1={robotSvg.sx} y1={robotSvg.sy}
-          x2={robotSvg.sx + Math.cos(yaw) * 6}
-          y2={robotSvg.sy - Math.sin(yaw) * 6}
-          stroke="#7df" strokeWidth={1.5}
-        />
-        <text x={robotSvg.sx} y={robotSvg.sy - 4} fontSize={3.5} fill="#5f87af" textAnchor="middle" fontFamily="monospace">
-          ({rx!.toFixed(2)}, {ry!.toFixed(2)})
-        </text>
-      </> : (
-        <text x={50} y={50} fontSize={5} fill="#444" textAnchor="middle" fontFamily="monospace">no odom</text>
-      )}
-    </svg>
+    <div className="flex flex-col h-full">
+      <svg
+        ref={svgRef}
+        viewBox="0 0 100 100"
+        className="w-full flex-1"
+        preserveAspectRatio="xMidYMid meet"
+        onClick={handleGridClick}
+        style={{ cursor: waypointMode ? 'crosshair' : 'default' }}
+      >
+        {gridLines}
+        {/* trail */}
+        {trail.length > 1 && trail.slice(0, -1).map((p, i) => {
+          const { sx: x1, sy: y1 } = toSvg(p.x, p.y)
+          const { sx: x2, sy: y2 } = toSvg(trail[i + 1].x, trail[i + 1].y)
+          return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#5f87af" strokeWidth={1} opacity={0.2 + (i / trail.length) * 0.7} />
+        })}
+        {/* waypoint */}
+        {waypointSvg && (
+          <>
+            <circle cx={waypointSvg.sx} cy={waypointSvg.sy} r={3} fill="#d75f5f" />
+            <circle cx={waypointSvg.sx} cy={waypointSvg.sy} r={5} fill="none" stroke="#d75f5f" strokeWidth={0.5} opacity={0.5} />
+            <text x={waypointSvg.sx} y={waypointSvg.sy + 8} fontSize={3.5} fill="#d75f5f" textAnchor="middle" fontFamily="monospace">
+              ({waypoint!.x.toFixed(2)}, {waypoint!.y.toFixed(2)})
+            </text>
+          </>
+        )}
+        {/* robot dot */}
+        {robotSvg ? <>
+          <circle cx={robotSvg.sx} cy={robotSvg.sy} r={3} fill="#5f87af" />
+          <line
+            x1={robotSvg.sx} y1={robotSvg.sy}
+            x2={robotSvg.sx + Math.cos(yaw) * 6}
+            y2={robotSvg.sy - Math.sin(yaw) * 6}
+            stroke="#7df" strokeWidth={1.5}
+          />
+          <text x={robotSvg.sx} y={robotSvg.sy - 4} fontSize={3.5} fill="#5f87af" textAnchor="middle" fontFamily="monospace">
+            ({rx!.toFixed(2)}, {ry!.toFixed(2)})
+          </text>
+        </> : (
+          <text x={50} y={50} fontSize={5} fill="#444" textAnchor="middle" fontFamily="monospace">no odom</text>
+        )}
+      </svg>
+      <div className="border-t flex items-center gap-2 px-2 py-1 text-[10px]">
+        <button
+          onClick={() => setWaypointMode(m => !m)}
+          className={`px-2 py-0.5 ${waypointMode ? 'bg-term-red text-primary-foreground' : 'bg-primary text-primary-foreground hover:opacity-80'}`}
+        >
+          {waypointMode ? 'cancel' : 'set waypoint'}
+        </button>
+        {waypoint && (
+          <button
+            onClick={() => { setWaypoint(null); setNavStatus(null) }}
+            className="px-2 py-0.5 bg-secondary text-secondary-foreground hover:opacity-80"
+          >
+            clear
+          </button>
+        )}
+        {navStatus && (
+          <span className={navStatus.startsWith('failed') ? 'text-term-red' : navStatus === 'arrived' ? 'text-term-green' : 'text-term-yellow'}>
+            {navStatus}
+          </span>
+        )}
+        {!navStatus && waypointMode && <span className="text-muted-foreground">click grid to navigate</span>}
+      </div>
+    </div>
   )
 }
 
@@ -1573,7 +1549,7 @@ function LidarGroup({ url }: { url: string }) {
 }
 
 
-function SystemStatsPanel({ url }: { url: string }) {
+function SystemStatsBody({ url }: { url: string }) {
   const { data: sysData } = useRosbridgeTopic<{ data?: string }>(url, '/robot/sys_stats', 'std_msgs/msg/String', 2000)
   const { data: batData } = useRosbridgeTopic<{
     voltage?: number
@@ -1618,47 +1594,42 @@ function SystemStatsPanel({ url }: { url: string }) {
         : 'text-term-red'
 
   return (
-    <div className="tui-panel bg-card">
-      <PanelHeader title="SYSTEM STATS" right={batPct != null ? `bat ${batPct}%` : stats ? 'live' : 'no data'} />
-      <div className="p-2 text-xs space-y-2">
-        {/* battery */}
-        <div>
-          <div className="flex justify-between mb-0.5">
-            <span className="text-muted-foreground">BAT</span>
-            <span className={batPctColor}>{batPct != null ? `${batPct}%` : '--'}</span>
-          </div>
-          <div className="h-1.5 w-full bg-muted rounded-sm overflow-hidden">
-            <div className="h-full rounded-sm transition-all" style={{ width: `${batPct ?? 0}%`, backgroundColor: batBarColor }} />
-          </div>
+    <div className="text-xs space-y-2">
+      <div>
+        <div className="flex justify-between mb-0.5">
+          <span className="text-muted-foreground">BAT</span>
+          <span className={batPctColor}>{batPct != null ? `${batPct}%` : '--'}</span>
         </div>
-        {(voltage != null || current != null || (batTemp != null && batTemp > 0)) && (
-          <div className="flex gap-3 text-[10px]">
-            {voltage != null && <span className="text-muted-foreground">V <span className="text-foreground">{voltage.toFixed(2)}</span></span>}
-            {current != null && <span className="text-muted-foreground">A <span className="text-foreground">{current.toFixed(2)}</span></span>}
-            {batTemp != null && batTemp > 0 && <span className="text-muted-foreground">T <span className={batTemp > 50 ? 'text-term-red' : 'text-foreground'}>{batTemp.toFixed(1)}{'\u00b0'}C</span></span>}
-          </div>
-        )}
-
-        <div className="border-t my-1" />
-
-        {/* system */}
-        {stats ? <>
-          <div>
-            <div className="flex justify-between mb-0.5"><span className="text-muted-foreground">CPU</span><span className={cpuPct != null && cpuPct > 80 ? 'text-term-red' : 'text-term-green'}>{cpuPct != null ? `${cpuPct}%` : `load ${load1m?.toFixed(2) ?? '--'}`}</span></div>
-            {bar(cpuPct)}
-          </div>
-          <div>
-            <div className="flex justify-between mb-0.5"><span className="text-muted-foreground">GPU</span><span className={gpuPct != null && gpuPct > 80 ? 'text-term-red' : 'text-term-green'}>{gpuPct != null ? `${gpuPct}%` : '--'}</span></div>
-            {bar(gpuPct)}
-          </div>
-          <div>
-            <div className="flex justify-between mb-0.5"><span className="text-muted-foreground">RAM</span><span className="text-term-yellow">{ramPct != null ? `${ramPct}%` : '--'}</span></div>
-            {bar(ramPct, 85)}
-          </div>
-          {hottest && <TelemetryRow label="temp" value={`${hottest.temp_c}\u00b0C (${hottest.zone})`} color={hottest.temp_c > 70 ? 'text-term-red' : hottest.temp_c > 50 ? 'text-term-yellow' : 'text-muted-foreground'} />}
-          {powerMw != null && <TelemetryRow label="power" value={`${(powerMw / 1000).toFixed(1)} W`} />}
-        </> : <span className="text-muted-foreground">run sys_stats_pub.py on robot</span>}
+        <div className="h-1.5 w-full bg-muted rounded-sm overflow-hidden">
+          <div className="h-full rounded-sm transition-all" style={{ width: `${batPct ?? 0}%`, backgroundColor: batBarColor }} />
+        </div>
       </div>
+      {(voltage != null || current != null || (batTemp != null && batTemp > 0)) && (
+        <div className="flex gap-3 text-[10px]">
+          {voltage != null && <span className="text-muted-foreground">V <span className="text-foreground">{voltage.toFixed(2)}</span></span>}
+          {current != null && <span className="text-muted-foreground">A <span className="text-foreground">{current.toFixed(2)}</span></span>}
+          {batTemp != null && batTemp > 0 && <span className="text-muted-foreground">T <span className={batTemp > 50 ? 'text-term-red' : 'text-foreground'}>{batTemp.toFixed(1)}{'\u00b0'}C</span></span>}
+        </div>
+      )}
+
+      <div className="border-t my-1" />
+
+      {stats ? <>
+        <div>
+          <div className="flex justify-between mb-0.5"><span className="text-muted-foreground">CPU</span><span className={cpuPct != null && cpuPct > 80 ? 'text-term-red' : 'text-term-green'}>{cpuPct != null ? `${cpuPct}%` : `load ${load1m?.toFixed(2) ?? '--'}`}</span></div>
+          {bar(cpuPct)}
+        </div>
+        <div>
+          <div className="flex justify-between mb-0.5"><span className="text-muted-foreground">GPU</span><span className={gpuPct != null && gpuPct > 80 ? 'text-term-red' : 'text-term-green'}>{gpuPct != null ? `${gpuPct}%` : '--'}</span></div>
+          {bar(gpuPct)}
+        </div>
+        <div>
+          <div className="flex justify-between mb-0.5"><span className="text-muted-foreground">RAM</span><span className="text-term-yellow">{ramPct != null ? `${ramPct}%` : '--'}</span></div>
+          {bar(ramPct, 85)}
+        </div>
+        {hottest && <TelemetryRow label="temp" value={`${hottest.temp_c}\u00b0C (${hottest.zone})`} color={hottest.temp_c > 70 ? 'text-term-red' : hottest.temp_c > 50 ? 'text-term-yellow' : 'text-muted-foreground'} />}
+        {powerMw != null && <TelemetryRow label="power" value={`${(powerMw / 1000).toFixed(1)} W`} />}
+      </> : <span className="text-muted-foreground">run sys_stats_pub.py on robot</span>}
     </div>
   )
 }
@@ -1879,13 +1850,19 @@ function AgentPage() {
           </div>
         </div>
 
-        <div className="tui-panel bg-card flex flex-col flex-1 min-w-[200px]">
+        <div className="tui-panel bg-card flex flex-col flex-1 min-w-[240px]">
           <PanelHeader title="AGENT INFO" />
           <div className="p-3 text-xs space-y-2 flex-1">
             <TelemetryRow label="name" value={agent.name} />
             <TelemetryRow label="id" value={agent.id} />
             <TelemetryRow label="status" value={agent.status} color={statusColor} />
             {url && <TelemetryRow label="ws" value={url} color="text-term-cyan" />}
+            {url && (
+              <>
+                <div className="border-t mt-2 pt-2" />
+                <SystemStatsBody url={url} />
+              </>
+            )}
           </div>
         </div>
 
@@ -1894,7 +1871,7 @@ function AgentPage() {
 
       {/* telemetry grid: visualizations + readouts */}
       {url && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 auto-rows-min">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 auto-rows-min">
           <div className="tui-panel bg-card flex flex-col">
             <PanelHeader title="ENCODER ODOM" right="map frame /amcl_pose" />
             <div className="p-1 aspect-square">
@@ -1902,13 +1879,9 @@ function AgentPage() {
             </div>
           </div>
           <ImuAccelPanel url={url} />
-          <SystemStatsPanel url={url} />
           <DrivePanel url={url} />
+          <DepthCloudPanel url={url} />
           <SkillsPanel url={url} />
-          <div className="col-span-2 grid grid-cols-2 gap-3 auto-rows-min">
-            <RobotPosePanel url={url} />
-            <DepthCloudPanel url={url} />
-          </div>
         </div>
       )}
 
