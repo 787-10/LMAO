@@ -1,4 +1,4 @@
-# LMAO — Large Multi-Agent Orchestration
+# LMAO: Large Multi-Agent Orchestration
 
 <p align="center">
   <img src="static/teaser_img.png" alt="LMAO System Overview" width="40%">
