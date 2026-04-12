@@ -39,6 +39,8 @@ Simulation Commands
   fault <robot> [topic]   Kill a sensor feed (default: /scan)
   recover <robot>         Restore all feeds for a robot
   drain <robot> [pct]     Set battery to pct% (default: 10)
+  blackout <robot>        Total comms loss — stops ALL telemetry
+  restore <robot>         Restore comms after blackout
 """
 
 
@@ -162,6 +164,24 @@ class OperatorREPL:
             pct = float(parts[2]) if len(parts) > 2 else 10.0
             self._sim.set_battery(robot, pct)
             print(f"  Battery for {robot} set to {pct:.0f}%\n")
+            return True
+
+        if cmd == "blackout":
+            if len(parts) < 2:
+                print("  Usage: blackout <robot>")
+                return True
+            robot = parts[1]
+            self._sim.blackout(robot)
+            print(f"  Comms blackout: {robot} — all telemetry stopped\n")
+            return True
+
+        if cmd == "restore":
+            if len(parts) < 2:
+                print("  Usage: restore <robot>")
+                return True
+            robot = parts[1]
+            self._sim.restore_comms(robot)
+            print(f"  Comms restored: {robot} — telemetry resumed\n")
             return True
 
         return False
