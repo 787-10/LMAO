@@ -1,13 +1,21 @@
 """ClaudeReasoner — the 'brain' of the hub planner.
 
-Uses the Anthropic SDK with tool_use to decompose human commands into
-robot tasks, query fleet state, and replan on failures.
+Agent-organized task logic:
+    resource target → move → verify motion → recover if stuck → retry.
+
+The agent does NOT check for faults before acting. It issues a motion
+command, THEN verifies the robot actually moved by running
+`local/imu_servo_odometry`. Only if that check reports 'stationary' (fault)
+after a motion command is the robot considered stuck.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import math
+import time
 from typing import Any
 
 import anthropic
@@ -30,76 +38,81 @@ from orchestrator.world_model.task_state import (
 log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
-You are the central mission planner for LMAO (Large Multi-Agent Orchestration),
-a planetary exploration system commanding scout rovers from a base station.
+You are the mission planner for LMAO — a planetary resource-retrieval system
+directing scout rovers from a base station.
 
-## Mission context
-You are coordinating scout rovers on a resource retrieval mission on a planetary
-surface. Resources (such as paper cups, water bottles, or other objects) are
-detected at approximate coordinates. Scouts navigate to the reported location,
-search the area visually, locate the resource, and retrieve it.
+## Your job
+Dispatch scouts to resources and acquire them. Motion verification and
+recovery are ONLY performed when the operator explicitly asks for them.
 
-The environment is harsh and uncertain:
-- Resources may have moved or been displaced from their reported coordinates.
-  If the scout arrives and the resource is not where expected, it should search
-  the surrounding area using its camera and vision skills.
-- Rovers may get physically stuck on terrain during transit.
-- Sensors or communications may fail at any time.
+## Skills (always use the full prefixed name)
 
-## Available skills (ALWAYS use full name with prefix)
-Navigation:
-- `innate-os/navigate_to_position` — navigate to {x, y, theta} in map frame
-- `innate-os/navigate_with_vision` — navigate using camera-based guidance
-- `local/move_forward` — drive forward a short distance
-- `local/turn_left` — turn left in place
-- `local/turn_right` — turn right in place
+Movement (produces wheel/base motion):
+- `innate-os/navigate_to_position`  — go to {x, y, theta} in map frame (primary)
+- `local/move_forward`              — short forward drive
+- `local/turn_left` / `local/turn_right` — turn in place
 
-Search & observation:
-- `local/wait_and_look` — stop and observe surroundings with camera
-- `local/approach_target_onboard` — visually approach a detected target using onboard camera
-- `local/scout_mission` — autonomous scouting sweep of the area
+IMPORTANT: `innate-os/navigate_to_position` and `innate-os/navigate_with_vision`
+commonly return `TaskResult.FAILED` / `success_type=failure` even when the
+rover IS in fact navigating. The response message from these skills is NOT a
+reliable indicator of success or failure — the orchestrator layer wraps them
+with `status: "dispatched"` to make this explicit. When you see
+`status: "dispatched"`, treat the nav goal as successfully sent. Do NOT
+conclude the rover is stuck or that the navigation failed.
 
-Recovery & diagnostics:
-- `local/xgames` — RECOVERY: uses arm/scoop to push rover free when stuck
-- `local/movement_check` — diagnose if rover can move (wheel + odom check)
-- `local/check_arm` — verify arm joint health
-- `local/check_battery` — battery status check
+Search & acquire:
+- `local/wait_and_look`           — observe with camera
+- `local/turn_left` / `local/turn_right`
+- `local/approach_target_onboard` — vision-guided final approach
+- `local/scout_mission`           — autonomous sweep
 
-Arm & manipulation:
-- `innate-os/arm_move_to_xyz` — move arm to {x, y, z}
-- `innate-os/arm_zero_position` — stow arm to safe position
-- `innate-os/record_position` — save current position as waypoint
+Operator-gated skills — NEVER invoke these on your own initiative. Only run
+them when the operator explicitly tells you to (e.g. "check if it's stuck",
+"verify motion", "run the imu check", "recover the rover", "run a battery
+check"):
+- `local/imu_servo_odometry` — compares commanded motion vs IMU
+    success → robot actually moved
+    fault   → wheels moving but IMU stationary → rover is STUCK
+- `local/recovery`            — arm/scoop pushes rover free
+- `local/check_arm`, `local/check_battery`
 
-## How to command robots
-- To move a robot to coordinates: call **navigate_robot**.
-- To run any other skill: call **execute_skill** with the full skill name.
-- Do NOT use assign_task to dispatch commands — it only records tasks.
+## The loop
 
-## When resource is not at expected location
-1. Use `local/wait_and_look` to observe the area
-2. Try `local/turn_left` or `local/turn_right` to scan surroundings
-3. If operator reports new coordinates, navigate there
-4. Use `local/approach_target_onboard` to visually approach once target is in view
+1. **Move.** Given a target, call `navigate_robot` (preferred for
+   coordinates) or an `execute_skill` movement. Wait for its result.
 
-## When rover gets stuck
-1. Diagnose: call `local/movement_check`
-2. Recover: call `local/xgames` (arm/scoop pushes rover free)
-3. Verify: call `local/movement_check` again
-4. If recovered: resume navigation to the original target
-5. If failed: report to operator, mark rover unavailable
+2. **Report.** Tell the operator what happened.
+   - success → "Move to (x, y) succeeded."
+   - failure → "Navigation rejected: <reason>."
+   Then STOP and await the next operator instruction. Do NOT auto-run
+   `imu_servo_odometry`, `recovery`, or any other diagnostic.
 
-## Health tiers
-FULL_CAPABILITY → DEGRADED_SENSORS → LOCAL_ONLY → SAFE_MODE → HIBERNATION
+3. **Search / acquire** is fine to do on your own once motion is confirmed
+   and you're at the destination (wait_and_look, turn_left/right,
+   approach_target_onboard, scout_mission). These don't need operator
+   permission.
 
-## Style
-- Speak as a planetary mission controller. Clear, direct, professional.
-- Narrate your actions step by step:
-  "Dispatching scout to investigate resource at reported coordinates..."
-  "Scout has arrived. Resource not found at expected location. Initiating area search..."
-  "Resource visually acquired. Approaching target..."
-  "Scout stuck on terrain. Executing recovery procedure..."
-  "Recovery successful. Resuming approach to resource."
-- Keep responses concise but informative.
+## Handling operator-gated skills
+
+When the operator asks you to check for stuck, run `imu_servo_odometry`:
+- `verdict: "fault"` / STATIONARY → report "Rover is stuck." and stop.
+  If (and only if) the operator then asks you to recover, run
+  `local/recovery`, report the result, and stop.
+- success → report "Motion verified."
+
+## Rules
+
+- Never run `imu_servo_odometry`, `recovery`, `check_arm`, or
+  `check_battery` speculatively. The operator drives those.
+- A failed motion command is NOT "stuck"; it just means the move wasn't
+  executed. Report the failure and wait for instructions.
+- Do not do pre-flight health checks, battery checks, or comms checks.
+- Do not use `assign_task` to drive the robot — it only records tasks.
+  Dispatch real motion via `navigate_robot` or `execute_skill`.
+- Keep replies short: "Dispatching to (x, y)...", "Move succeeded.",
+  "Navigation rejected — reporting.", "Motion verified.",
+  "Rover is stuck.", "Recovery complete.", "Arrived."
+- Speak as a mission controller: direct, professional, no hedging.
 """
 
 
@@ -113,27 +126,44 @@ class ClaudeReasoner:
         conn: ConnectionManager,
         health: FleetHealthMonitor,
         config: ClaudeConfig,
+        broadcaster: Any = None,
     ) -> None:
         self._world = world
         self._conn = conn
         self._health = health
         self._config = config
-        self._client = anthropic.Anthropic()   # uses ANTHROPIC_API_KEY
+        self._broadcaster = broadcaster
+        self._client = anthropic.Anthropic()  # uses ANTHROPIC_API_KEY
         self._messages: list[dict[str, Any]] = []
         self._current_mission: MissionPlan | None = None
+
+    async def _emit(self, role: str, content: str, kind: str = "text") -> None:
+        """Broadcast a claude-conversation event to WS subscribers."""
+        if self._broadcaster is None:
+            return
+        try:
+            await self._broadcaster.broadcast(
+                {
+                    "type": "CLAUDE_MESSAGE",
+                    "robot": "",
+                    "data": {"role": role, "kind": kind, "content": content},
+                    "timestamp": time.time(),
+                }
+            )
+        except Exception:
+            log.exception("failed to broadcast claude event")
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     async def process_command(self, command: str) -> str:
-        """Process a human operator command.  Returns the reasoner's text reply."""
+        """Process a human operator command. Returns the reasoner's text reply."""
         fleet_summary = await self._world.get_fleet_summary()
         mission_ctx = ""
         if self._current_mission:
-            mission_ctx = (
-                "\n[Active Mission]\n"
-                + mission_summary(self._current_mission)
+            mission_ctx = "\n[Active Mission]\n" + mission_summary(
+                self._current_mission
             )
         augmented = (
             f"[Fleet State]\n{fleet_summary}{mission_ctx}\n\n"
@@ -143,171 +173,32 @@ class ClaudeReasoner:
         return await self._run_loop()
 
     async def handle_health_event(self, event: WorldEvent) -> str:
-        """Called by the event loop when a health transition occurs.
-
-        Builds a rich prompt with affected tasks, remaining objectives,
-        and available fleet so Claude can make informed replan decisions.
-        """
+        """Health transitions are informational only — reasoner doesn't pre-empt
+        the active plan. It just gets notified so it can factor the change into
+        its next decision."""
         robot_name = event.robot
         new_tier = event.data.get("new_tier", "?")
         old_tier = event.data.get("old_tier", "?")
-        topic_health = event.data.get("topic_health", {})
-
-        # Gather context for Claude
-        rs = await self._world.get_robot_state(robot_name)
-        affected_tasks = await self._world.get_tasks_for_robot(robot_name)
-        available = await self._world.get_available_robots()
-        health_report = self._health.get_health_report()
-
-        # Build affected-tasks summary
-        affected_lines = []
-        for t in affected_tasks:
-            if t.status.value in ("PENDING", "IN_PROGRESS"):
-                affected_lines.append(
-                    f"  - [{t.id}] {t.task_type.value}: {t.description} "
-                    f"(status={t.status.value}, target={t.target})"
-                )
-        affected_str = "\n".join(affected_lines) if affected_lines else "  (none)"
-
-        # Build fleet health summary
-        fleet_health_lines = []
-        for name, info in health_report.items():
-            rates = ", ".join(f"{t}={r}Hz" for t, r in info.get("topic_rates_hz", {}).items())
-            fleet_health_lines.append(f"  {name}: {info['tier']} | {rates}")
-        fleet_health_str = "\n".join(fleet_health_lines)
-
-        # Identify what capability was lost
-        failed_sensors = [
-            t for t, h in topic_health.items() if h in ("FAILED", "DEGRADED")
-        ]
-        capability_impact = ""
-        if "/scan" in failed_sensors:
-            capability_impact += "LiDAR is down — robot cannot scan or navigate safely. "
-        if "/odom" in failed_sensors:
-            capability_impact += "Odometry is down — robot position is unreliable. "
-        if not failed_sensors and new_tier == "LOCAL_ONLY":
-            capability_impact = "Comms blackout — robot is operating on last-known mission parameters. Hub cannot send new commands until comms restore. "
-        if new_tier == "SAFE_MODE":
-            capability_impact += "Multiple failures or low battery — robot should not accept new tasks. "
-        if new_tier == "HIBERNATION":
-            capability_impact += "Robot is unreachable or critically low battery — treat as unavailable. "
-
         prompt = (
-            f"[FAULT ESCALATION — REPLAN REQUIRED]\n"
-            f"\n"
-            f"Robot '{robot_name}' has degraded: {old_tier} → {new_tier}\n"
-            f"Failed/degraded sensors: {failed_sensors or 'none (comms-level fault)'}\n"
-            f"Impact: {capability_impact}\n"
-            f"\n"
-            f"Tasks currently assigned to {robot_name}:\n{affected_str}\n"
-            f"\n"
-            f"Available robots for reassignment: {available}\n"
-            f"\n"
-            f"Fleet health:\n{fleet_health_str}\n"
-            f"\n"
-            f"Given the remaining mission objectives and available resources, "
-            f"provide updated task assignments. If {robot_name} has in-progress "
-            f"tasks, reassign them to healthy robots. If no robot can fulfil a "
-            f"task, mark it and explain why."
+            f"[HEALTH NOTICE] {robot_name}: {old_tier} → {new_tier}. "
+            f"If the active plan is affected, adjust. Otherwise continue."
         )
         return await self.process_command(prompt)
 
     async def handle_comms_lost(self, event: WorldEvent) -> str:
-        """Called when a scout loses contact with the hub.
-
-        The scout falls back to its last-known mission parameters and local
-        FDIR.  The hub replans without that scout — treating it as temporarily
-        unavailable.
-        """
         robot_name = event.robot
-        last_pos = event.data.get("robot_last_position")
-        last_task = event.data.get("robot_last_task")
-        last_contact = event.data.get("last_contact_ago_s", "?")
-
-        affected_tasks = await self._world.get_tasks_for_robot(robot_name)
-        available = await self._world.get_available_robots()
-        # The lost robot is NOT in the available list (it's LOCAL_ONLY now)
-
-        affected_lines = []
-        for t in affected_tasks:
-            if t.status.value in ("PENDING", "IN_PROGRESS"):
-                affected_lines.append(
-                    f"  - [{t.id}] {t.task_type.value}: {t.description} "
-                    f"(status={t.status.value})"
-                )
-        affected_str = "\n".join(affected_lines) if affected_lines else "  (none)"
-
         prompt = (
-            f"[COMMS BLACKOUT — REPLAN WITHOUT {robot_name.upper()}]\n"
-            f"\n"
-            f"Contact lost with '{robot_name}' {last_contact}s ago.\n"
-            f"Last known position: {last_pos}\n"
-            f"Last assigned task: {last_task}\n"
-            f"\n"
-            f"The robot is now operating autonomously on its last-known mission "
-            f"parameters with local FDIR. It cannot receive new commands until "
-            f"comms are restored.\n"
-            f"\n"
-            f"Tasks that were assigned to {robot_name}:\n{affected_str}\n"
-            f"\n"
-            f"Available robots: {available}\n"
-            f"\n"
-            f"Replan the mission WITHOUT {robot_name}. Reassign its pending/"
-            f"in-progress tasks to available robots. Do NOT assign any new tasks "
-            f"to {robot_name} until comms are restored."
+            f"[COMMS LOST] Contact dropped with {robot_name}. "
+            f"The scout is running last-known parameters locally. "
+            f"Continue the mission without it for now."
         )
         return await self.process_command(prompt)
 
     async def handle_comms_restored(self, event: WorldEvent) -> str:
-        """Called when a scout regains contact with the hub.
-
-        The scout uploads its local state.  The hub reconciles the world
-        model and asks Claude to replan with the reunified fleet.
-        """
         robot_name = event.robot
-        blackout_duration = event.data.get("blackout_duration_s", "?")
-        current_pos = event.data.get("robot_position")
-        current_battery = event.data.get("robot_battery")
-        current_task = event.data.get("robot_task")
-
-        # Get the robot's current state (just updated by restored telemetry)
-        rs = await self._world.get_robot_state(robot_name)
-        available = await self._world.get_available_robots()
-        health_report = self._health.get_health_report()
-
-        # What tasks are still pending across the fleet?
-        all_tasks_lines = []
-        if self._current_mission:
-            for t in self._current_mission.tasks:
-                if t.status.value in ("PENDING", "IN_PROGRESS"):
-                    all_tasks_lines.append(
-                        f"  - [{t.id}] {t.task_type.value}: {t.description} "
-                        f"(status={t.status.value}, robot={t.assigned_robot or 'unassigned'})"
-                    )
-        remaining_str = "\n".join(all_tasks_lines) if all_tasks_lines else "  (none)"
-
-        robot_health = health_report.get(robot_name, {})
-
         prompt = (
-            f"[COMMS RESTORED — RECONCILE AND REPLAN]\n"
-            f"\n"
-            f"Contact restored with '{robot_name}' after {blackout_duration}s blackout.\n"
-            f"Robot's current state:\n"
-            f"  Position: {current_pos}\n"
-            f"  Battery: {current_battery}%\n"
-            f"  Health tier: {rs.health_tier.value if rs else '?'}\n"
-            f"  Topic rates: {robot_health.get('topic_rates_hz', {})}\n"
-            f"  Last task it was working on: {current_task}\n"
-            f"\n"
-            f"Available robots (now including {robot_name}): {available}\n"
-            f"\n"
-            f"Remaining mission tasks:\n{remaining_str}\n"
-            f"\n"
-            f"Reconcile: {robot_name} is back online. Check if it completed "
-            f"its previous task during the blackout (based on its current "
-            f"position vs task target). Replan the mission with the full "
-            f"fleet. Redistribute work if {robot_name} is healthy enough to "
-            f"take on new tasks."
+            f"[COMMS RESTORED] {robot_name} is reachable again. "
+            f"Fold it back into the plan if there's work to dispatch."
         )
         return await self.process_command(prompt)
 
@@ -317,6 +208,22 @@ class ClaudeReasoner:
 
     async def _run_loop(self) -> str:
         """Call Claude in a tool-use loop until end_turn."""
+        # broadcast the most recent user turn (command or tool_result batch)
+        if self._messages:
+            last = self._messages[-1]
+            if last["role"] == "user":
+                content = last["content"]
+                if isinstance(content, str):
+                    await self._emit("user", content, "prompt")
+                elif isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "tool_result":
+                            await self._emit(
+                                "tool",
+                                f"{item.get('tool_use_id', '?')}: {item.get('content', '')}",
+                                "tool_result",
+                            )
+
         while True:
             response = await asyncio.to_thread(
                 self._client.messages.create,
@@ -328,9 +235,21 @@ class ClaudeReasoner:
             )
 
             # Append assistant turn
-            self._messages.append(
-                {"role": "assistant", "content": response.content}
-            )
+            self._messages.append({"role": "assistant", "content": response.content})
+
+            # broadcast assistant content (text + tool_use)
+            for block in response.content:
+                if getattr(block, "type", None) == "text":
+                    text = getattr(block, "text", "")
+                    if text:
+                        await self._emit("assistant", text, "text")
+                elif getattr(block, "type", None) == "tool_use":
+                    args_str = json.dumps(block.input, default=str)
+                    await self._emit(
+                        "assistant",
+                        f"{block.name}({args_str})",
+                        "tool_use",
+                    )
 
             if response.stop_reason == "end_turn":
                 return self._extract_text(response.content)
@@ -339,15 +258,19 @@ class ClaudeReasoner:
                 tool_results = []
                 for block in response.content:
                     if block.type == "tool_use":
-                        result = await self._dispatch_tool(
-                            block.name, block.input
-                        )
+                        result = await self._dispatch_tool(block.name, block.input)
+                        result_json = json.dumps(result, default=str)
                         tool_results.append(
                             {
                                 "type": "tool_result",
                                 "tool_use_id": block.id,
-                                "content": json.dumps(result),
+                                "content": result_json,
                             }
+                        )
+                        await self._emit(
+                            "tool",
+                            f"{block.name} → {result_json}",
+                            "tool_result",
                         )
                 self._messages.append({"role": "user", "content": tool_results})
             else:
@@ -411,6 +334,9 @@ class ClaudeReasoner:
         return {"fleet_summary": await self._world.get_fleet_summary()}
 
     async def _tool_assign_task(self, args: dict) -> Any:
+        """Record a task in the mission plan. Does NOT gate on health/connection —
+        the reasoner is expected to dispatch the actual command with
+        navigate_robot or execute_skill and react to whatever the robot returns."""
         robot_name = args["robot_name"]
         task_type_str = args["task_type"]
         description = args["description"]
@@ -421,16 +347,6 @@ class ClaudeReasoner:
         except ValueError:
             return {"error": f"Invalid task_type: {task_type_str}"}
 
-        # Check robot exists and is available
-        rs = await self._world.get_robot_state(robot_name)
-        if rs is None:
-            return {"error": f"Unknown robot: {robot_name}"}
-        if not rs.connected:
-            return {"error": f"{robot_name} is not connected"}
-        if rs.health_tier.value in ("SAFE_MODE", "HIBERNATION"):
-            return {"error": f"{robot_name} is in {rs.health_tier.value}, cannot accept tasks"}
-
-        # Create task and mission if needed
         task = Task(
             description=description,
             task_type=task_type,
@@ -449,20 +365,97 @@ class ClaudeReasoner:
             "task_id": task.id,
             "assigned_to": robot_name,
             "status": "assigned",
-            "hint": "Task recorded. Use navigate_robot or execute_skill to dispatch the actual command to the robot.",
+            "hint": "Task recorded. Dispatch motion via navigate_robot or execute_skill, then verify with local/imu_servo_odometry.",
         }
+
+    _MOTION_SKILLS = (
+        "innate-os/navigate_to_position",
+        "innate-os/navigate_with_vision",
+        "local/move_forward",
+        "local/turn_left",
+        "local/turn_right",
+    )
+
+    @staticmethod
+    def _motion_succeeded(result: Any) -> bool:
+        """A motion command is only considered to have moved the rover when
+        the underlying skill reports success. Anything else (rejection, plan
+        failure, timeout) means the rover was never commanded to move."""
+        if not isinstance(result, dict):
+            return False
+        if result.get("success") is True:
+            return True
+        raw = result.get("raw")
+        if isinstance(raw, dict) and raw.get("success_type") == "success":
+            return True
+        return False
 
     async def _tool_navigate_robot(self, args: dict) -> Any:
         robot_name = args["robot_name"]
-        x = args["x"]
-        y = args["y"]
-        theta = args.get("theta", 0.0)
+        # force floats — Claude often serializes integers as ints (1 instead of
+        # 1.0), and innate-os/navigate_to_position requires float coordinates
+        x = float(args["x"])
+        y = float(args["y"])
+
+        # Theta policy:
+        #   1. if Claude explicitly passed theta, honor it.
+        #   2. otherwise compute the heading from current pos -> goal pos:
+        #        theta = atan2(gy - cy, gx - cx)
+        #      so the rover ends up facing the direction it traveled,
+        #      which is always a feasible end-orientation for nav2.
+        #   3. if we have no current position yet (no /amcl_pose received),
+        #      fall back to 0.0.
+        if "theta" in args and args["theta"] is not None:
+            theta = float(args["theta"])
+            theta_src = "explicit"
+        else:
+            rs = await self._world.get_robot_state(robot_name)
+            if (
+                rs is not None
+                and rs.position is not None
+                and len(rs.position) >= 2
+            ):
+                cx, cy = float(rs.position[0]), float(rs.position[1])
+                dx, dy = x - cx, y - cy
+                if dx == 0.0 and dy == 0.0:
+                    # goal == current pos — keep current yaw
+                    theta = float(rs.position[2]) if len(rs.position) >= 3 else 0.0
+                    theta_src = f"goal==current, kept current-yaw ({rs.position})"
+                else:
+                    theta = math.atan2(dy, dx)
+                    theta_src = (
+                        f"heading-from ({cx:.3f},{cy:.3f}) -> ({x:.3f},{y:.3f}) "
+                        f"dx={dx:.3f} dy={dy:.3f} atan2={theta:.4f} rad"
+                    )
+            else:
+                theta = 0.0
+                theta_src = "fallback-zero (no amcl_pose yet)"
+
+        print(
+            f"[reasoner] navigate_robot robot={robot_name} "
+            f"x={x!r} y={y!r} theta={theta!r} theta_src={theta_src}",
+            flush=True,
+        )
 
         result = await self._conn.send_nav_goal(robot_name, x, y, theta)
+        print(f"[reasoner] send_nav_goal returned: {result}", flush=True)
         return {
             "robot": robot_name,
             "target": {"x": x, "y": y, "theta": theta},
-            "nav_result": result,
+            "status": "dispatched",
+            "skill_response": result,
+            "note": (
+                "innate-os/navigate_to_position commonly responds with "
+                "TaskResult.FAILED / success_type=failure even when the rover "
+                "is actively navigating. The response message is NOT an "
+                "authoritative indicator of success or failure. Treat the goal "
+                "as successfully dispatched."
+            ),
+            "hint": (
+                "Report to the operator that navigation has been dispatched. "
+                "Wait for the next operator instruction. Do NOT invoke "
+                "imu_servo_odometry or recovery on your own."
+            ),
         }
 
     async def _tool_execute_skill(self, args: dict) -> Any:
@@ -471,11 +464,43 @@ class ClaudeReasoner:
         parameters = args.get("parameters", {})
 
         result = await self._conn.execute_skill(robot_name, skill_name, parameters)
-        return {
+
+        # innate-os nav skills lie about success — the dashboard sees the same
+        # TaskResult.FAILED and the rover still navigates. Treat nav calls as
+        # dispatch-only regardless of the skill response.
+        if skill_name in (
+            "innate-os/navigate_to_position",
+            "innate-os/navigate_with_vision",
+        ):
+            return {
+                "robot": robot_name,
+                "skill": skill_name,
+                "status": "dispatched",
+                "skill_response": result,
+                "note": (
+                    f"{skill_name} commonly responds with TaskResult.FAILED / "
+                    "success_type=failure even when the rover is actively "
+                    "navigating. The response message is NOT an authoritative "
+                    "indicator of success or failure."
+                ),
+                "hint": (
+                    "Report to the operator that the skill was dispatched. "
+                    "Do NOT invoke imu_servo_odometry or recovery on your own."
+                ),
+            }
+
+        payload: dict[str, Any] = {
             "robot": robot_name,
             "skill": skill_name,
             "result": result,
         }
+        if skill_name in self._MOTION_SKILLS:
+            payload["hint"] = (
+                "Report the result to the operator and wait for the next "
+                "instruction. Do NOT invoke imu_servo_odometry or recovery "
+                "on your own."
+            )
+        return payload
 
     async def _tool_get_fleet_health(self, _args: dict) -> Any:
         return self._health.get_health_report()
@@ -487,7 +512,6 @@ class ClaudeReasoner:
         if self._current_mission is None:
             return {"status": "no active mission to replan"}
 
-        # Mark failed tasks
         for tid in failed_ids:
             await self._world.update_task_status(tid, TaskStatus.FAILED)
 
@@ -499,49 +523,15 @@ class ClaudeReasoner:
             "reason": reason,
             "failed_tasks": failed_ids,
             "available_robots": available,
-            "hint": "Use assign_task to reassign work to available robots.",
+            "hint": "Reassign via assign_task, then dispatch motion.",
         }
 
     async def _tool_stop_robot(self, args: dict) -> Any:
         robot_name = args["robot_name"]
         self._conn.stop_robot(robot_name)
 
-        # Cancel current task
         rs = await self._world.get_robot_state(robot_name)
         if rs and rs.current_task_id:
-            await self._world.update_task_status(
-                rs.current_task_id, TaskStatus.FAILED
-            )
+            await self._world.update_task_status(rs.current_task_id, TaskStatus.FAILED)
 
         return {"robot": robot_name, "status": "stopped"}
-
-    # ------------------------------------------------------------------
-    # Task execution helper
-    # ------------------------------------------------------------------
-
-    async def _execute_task_on_robot(self, task: Task) -> dict:
-        """Dispatch a task to the actual robot via connection manager."""
-        robot = task.assigned_robot
-        if robot is None:
-            return {"error": "task not assigned"}
-
-        if task.task_type == TaskType.NAVIGATE:
-            x = task.target.get("x", 0.0)
-            y = task.target.get("y", 0.0)
-            theta = task.target.get("theta", 0.0)
-            return await self._conn.send_nav_goal(robot, x, y, theta)
-
-        if task.task_type == TaskType.MANIPULATE:
-            skill = task.target.get("action", "")
-            params = {k: v for k, v in task.target.items() if k != "action"}
-            return await self._conn.execute_skill(robot, skill, params)
-
-        if task.task_type == TaskType.SCAN:
-            # Scan = navigate to area center then do a 360 LiDAR sweep
-            # For now, just navigate
-            x = task.target.get("x", 0.0)
-            y = task.target.get("y", 0.0)
-            return await self._conn.send_nav_goal(robot, x, y)
-
-        # WAIT — no action needed
-        return {"status": "waiting"}

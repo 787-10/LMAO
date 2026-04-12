@@ -1460,13 +1460,26 @@ function LiveLocationTrack({ url }: { url: string }) {
     const wy = -(svgPt.y - 50) / scale   // flip Y back
     setWaypoint({ x: wx, y: wy })
     setNavStatus('sending…')
-    const currentYaw = rawOri
-      ? Math.atan2(2 * (rawOri.w * rawOri.z + rawOri.x * rawOri.y), 1 - 2 * (rawOri.y ** 2 + rawOri.z ** 2))
-      : 0
+    // match orchestrator: theta = heading from current pos to goal
+    // (atan2(dy, dx)). if we have no pose yet, theta=0. if goal equals
+    // current pos, keep current yaw.
+    let waypointTheta = 0
+    if (rx !== null && ry !== null) {
+      const dx = wx - rx
+      const dy = wy - ry
+      if (dx === 0 && dy === 0) {
+        waypointTheta = rawOri
+          ? Math.atan2(2 * (rawOri.w * rawOri.z + rawOri.x * rawOri.y), 1 - 2 * (rawOri.y ** 2 + rawOri.z ** 2))
+          : 0
+      } else {
+        waypointTheta = Math.atan2(dy, dx)
+      }
+    }
+    console.log('[waypoint] theta=', waypointTheta, 'from (', rx, ry, ') -> (', wx, wy, ')')
     sendActionGoal(url, 'innate-os/navigate_to_position', (ok, message) => {
       setNavStatus(ok ? 'arrived' : `failed: ${message || 'error'}`)
-      setTimeout(() => setNavStatus(null), 4000)
-    }, { x: wx, y: wy, theta: currentYaw, local_frame: false })
+      setTimeout(() => setNavStatus(null), 10000)
+    }, { x: wx, y: wy, theta: waypointTheta, local_frame: false })
   }
 
   let yaw = 0

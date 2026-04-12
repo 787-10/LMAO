@@ -101,8 +101,8 @@ async def async_main(config: HubConfig, *, sim_mode: bool = False, api_port: int
         conn = ConnectionManager(config.fleet)
 
     health = FleetHealthMonitor(conn, world, config.health)
-    reasoner = ClaudeReasoner(world, conn, health, config.claude)
     broadcaster = EventBroadcaster()
+    reasoner = ClaudeReasoner(world, conn, health, config.claude, broadcaster=broadcaster)
     repl = OperatorREPL(reasoner, world, health, simulator=simulator)
 
     # 2. Create FastAPI app
