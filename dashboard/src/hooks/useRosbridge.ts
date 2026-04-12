@@ -242,7 +242,39 @@ function toDataUrl(data: number[] | string, format: string): string {
   return `data:image/${format};base64,${btoa(binary)}`
 }
 
-// one-shot topic fetch: subscribe, grab one msg, unsubscribe
+// one-shot grab via shared connection
+export function sampleFromShared<T = Record<string, unknown>>(
+  url: string,
+  topic: string,
+  timeoutMs = 15000,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const conn = connections.get(url)
+    if (!conn?.ws || conn.ws.readyState !== WebSocket.OPEN) {
+      reject(new Error('not connected'))
+      return
+    }
+
+    const timer = setTimeout(() => {
+      conn.listeners.delete(listener)
+      removeSubscription(url, topic)
+      reject(new Error('timeout'))
+    }, timeoutMs)
+
+    const listener: Listener = (t, msg) => {
+      if (t !== topic) return
+      clearTimeout(timer)
+      conn.listeners.delete(listener)
+      removeSubscription(url, topic)
+      resolve(msg as T)
+    }
+
+    conn.listeners.add(listener)
+    addSubscription(url, { topic })
+  })
+}
+
+// one-shot topic fetch via dedicated WS
 export function fetchRosbridgeOnce<T = Record<string, unknown>>(
   url: string,
   topic: string,
@@ -271,7 +303,10 @@ export function fetchRosbridgeOnce<T = Record<string, unknown>>(
 
     ws.onmessage = (e) => {
       try {
-        const msg = JSON.parse(e.data)
+        const raw = typeof e.data === 'string'
+          ? e.data.replace(/\[,/g, '[null,').replace(/,(?=[\],])/g, ',null')
+          : e.data
+        const msg = JSON.parse(raw)
         console.log('[fetchOnce] msg:', msg.op, msg.topic ?? '', msg.op !== 'publish' ? (msg.msg ?? '') : `(${typeof msg.msg?.data} data)`)
         if (msg.op === 'publish' && msg.topic === topic) {
           resolved = true

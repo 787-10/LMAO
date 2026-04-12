@@ -18,8 +18,8 @@
   --card-foreground: #1c1c1c; /* 234 */
   --popover: #eeeeee; /* 255 */
   --popover-foreground: #1c1c1c; /* 234 */
-  --primary: #5f87af; /* 67 - steel blue */
-  --primary-foreground: #eeeeee; /* 255 */
+  --primary: #ff8700; /* 208 - orange */
+  --primary-foreground: #1c1c1c; /* 234 */
   --secondary: #d0d0d0; /* 252 */
   --secondary-foreground: #1c1c1c; /* 234 */
   --muted: #d0d0d0; /* 252 */
@@ -29,8 +29,8 @@
   --destructive: #d75f5f; /* 167 */
   --border: #bcbcbc; /* 250 */
   --input: #bcbcbc; /* 250 */
-  --ring: #5f87af; /* 67 */
-  --chart-1: #5f87af; /* 67 */
+  --ring: #ff8700; /* 208 */
+  --chart-1: #ff8700; /* 208 */
   --chart-2: #5faf5f; /* 71 */
   --chart-3: #af875f; /* 137 */
   --chart-4: #af5f87; /* 132 */
@@ -38,12 +38,12 @@
   --radius: 0px;
   --sidebar: #e4e4e4; /* 254 */
   --sidebar-foreground: #1c1c1c; /* 234 */
-  --sidebar-primary: #5f87af; /* 67 */
-  --sidebar-primary-foreground: #eeeeee; /* 255 */
+  --sidebar-primary: #ff8700; /* 208 */
+  --sidebar-primary-foreground: #1c1c1c; /* 234 */
   --sidebar-accent: #d0d0d0; /* 252 */
   --sidebar-accent-foreground: #1c1c1c; /* 234 */
   --sidebar-border: #bcbcbc; /* 250 */
-  --sidebar-ring: #5f87af; /* 67 */
+  --sidebar-ring: #ff8700; /* 208 */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -55,8 +55,8 @@
     --card-foreground: #bcbcbc; /* 250 */
     --popover: #1c1c1c; /* 234 */
     --popover-foreground: #bcbcbc; /* 250 */
-    --primary: #5f87af; /* 67 */
-    --primary-foreground: #eeeeee; /* 255 */
+    --primary: #ff8700; /* 208 - orange */
+    --primary-foreground: #1c1c1c; /* 234 */
     --secondary: #262626; /* 235 */
     --secondary-foreground: #bcbcbc; /* 250 */
     --muted: #262626; /* 235 */
@@ -66,20 +66,20 @@
     --destructive: #d75f5f; /* 167 */
     --border: #303030; /* 236 */
     --input: #303030; /* 236 */
-    --ring: #5f87af; /* 67 */
-    --chart-1: #5f87af; /* 67 */
+    --ring: #ff8700; /* 208 */
+    --chart-1: #ff8700; /* 208 */
     --chart-2: #5faf5f; /* 71 */
     --chart-3: #af875f; /* 137 */
     --chart-4: #af5f87; /* 132 */
     --chart-5: #5fafaf; /* 73 */
     --sidebar: #1c1c1c; /* 234 */
     --sidebar-foreground: #bcbcbc; /* 250 */
-    --sidebar-primary: #5f87af; /* 67 */
-    --sidebar-primary-foreground: #eeeeee; /* 255 */
+    --sidebar-primary: #ff8700; /* 208 */
+    --sidebar-primary-foreground: #1c1c1c; /* 234 */
     --sidebar-accent: #262626; /* 235 */
     --sidebar-accent-foreground: #bcbcbc; /* 250 */
     --sidebar-border: #303030; /* 236 */
-    --sidebar-ring: #5f87af; /* 67 */
+    --sidebar-ring: #ff8700; /* 208 */
   }
 }
 
@@ -140,6 +140,128 @@
 
 .status-live {
   animation: status-pulse 2s ease-in-out infinite;
+}
+
+/* TUI double-border panels */
+.tui-panel {
+  border: 1px solid var(--border);
+  position: relative;
+}
+.tui-panel::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border: 1px solid var(--border);
+  pointer-events: none;
+  opacity: 0.3;
+}
+
+/* TUI header with box-drawing decoration */
+.tui-header {
+  border-bottom: 1px solid var(--border);
+  position: relative;
+}
+.tui-header::before {
+  content: '╔';
+  position: absolute;
+  left: -1px;
+  top: -1px;
+  color: var(--border);
+  font-size: 10px;
+  line-height: 1;
+}
+.tui-header::after {
+  content: '╗';
+  position: absolute;
+  right: -1px;
+  top: -1px;
+  color: var(--border);
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* TUI sidebar separator */
+.tui-sidebar {
+  border-right: 1px double var(--border);
+}
+
+/* TUI top bar */
+.tui-topbar {
+  border-bottom: 3px double var(--border);
+}
+
+/* TUI section divider */
+.tui-divider {
+  border-top: 3px double var(--border);
+  margin: 0;
+}
+
+/* scan line animation for camera feeds */
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+.tui-scanline::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    transparent 0%,
+    rgba(95, 135, 175, 0.03) 50%,
+    transparent 100%
+  );
+  animation: scanline 4s linear infinite;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* diagonal hatch pattern backgrounds */
+.tui-hatch {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 3px,
+    var(--border) 3px,
+    var(--border) 3.5px
+  );
+  background-size: 100% 100%;
+}
+
+.tui-hatch-subtle {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 4px,
+    var(--border) 4px,
+    var(--border) 4.5px
+  );
+  background-size: 100% 100%;
+  opacity: 0.15;
+}
+
+.tui-hatch-dense {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 2px,
+    var(--border) 2px,
+    var(--border) 2.5px
+  );
+  background-size: 100% 100%;
+}
+
+/* active/focused button hatch */
+.tui-btn-active {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 3px,
+    currentColor 3px,
+    currentColor 3.5px
+  );
+  background-color: var(--primary);
+  color: var(--primary-foreground);
 }
 
 @layer base {

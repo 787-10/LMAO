@@ -41,7 +41,7 @@ function AgentCard({ agent }: { agent: Agent }) {
     <Link
       to="/$agentId"
       params={{ agentId: agent.id }}
-      className="block border bg-card text-card-foreground no-underline hover:border-primary transition-colors"
+      className="block tui-panel bg-card text-card-foreground no-underline hover:border-primary transition-colors"
     >
       <CameraFeed agent={agent} />
       <div className="p-3 border-t">
@@ -63,7 +63,7 @@ function AgentRow({ agent }: { agent: Agent }) {
     <Link
       to="/$agentId"
       params={{ agentId: agent.id }}
-      className="flex items-center border bg-card text-card-foreground no-underline hover:border-primary transition-colors"
+      className="flex items-center tui-panel bg-card text-card-foreground no-underline hover:border-primary transition-colors"
     >
       <div className="w-32 h-20 shrink-0 border-r">
         <div className="bg-secondary h-full flex items-center justify-center">

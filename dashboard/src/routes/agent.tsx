@@ -7,7 +7,7 @@ import {
   type AgentEvent,
   type EventLevel,
 } from '@/lib/agents'
-import { useRosbridgeImage, useRosbridgeTopic, useRosbridgeStatus, publishRosbridge } from '@/hooks/useRosbridge'
+import { useRosbridgeImage, useRosbridgeTopic, useRosbridgeStatus, publishRosbridge, sampleFromShared } from '@/hooks/useRosbridge'
 
 export const agentRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -42,8 +42,8 @@ function formatNum(n: unknown, decimals = 3): string {
 function PanelHeader({ title, right }: { title: string; right?: string }) {
   return (
     <div className="border-b px-2 py-1 text-xs text-muted-foreground flex items-center justify-between">
-      <span>{title}</span>
-      {right && <span>{right}</span>}
+      <span><span className="text-border mr-1">&#9552;</span>{title}<span className="text-border ml-1">&#9552;</span></span>
+      {right && <span>{right}<span className="text-border ml-1">&#9552;</span></span>}
     </div>
   )
 }
@@ -112,31 +112,143 @@ function useFps(frameCount: number): number {
   return fps
 }
 
-function ImageFeed({ url, topic, label }: { url: string; topic: string; label: string }) {
+function renderDepthOverlay(
+  canvas: HTMLCanvasElement,
+  msg: { width: number; height: number; encoding: string; data: number[] },
+) {
+  const { width: w, height: h, encoding, data: d } = msg
+  if (!w || !h || !d?.length) return
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  const imgData = ctx.createImageData(w, h)
+  const is16 = encoding === '16UC1' || encoding === '16SC1'
+  const signed = encoding === '16SC1'
+  const pixels = w * h
+
+  if (is16) {
+    const bytes = new Uint8Array(d)
+    const depth = signed ? new Int16Array(bytes.buffer) : new Uint16Array(bytes.buffer)
+    let max = 0
+    for (let i = 0; i < pixels; i++) if (depth[i] > max) max = depth[i]
+    if (max === 0) max = 1
+    for (let i = 0; i < pixels; i++) {
+      const v = depth[i]
+      if (v <= 0) { imgData.data[i * 4 + 3] = 0; continue }
+      const n = Math.min(1, v / max)
+      // blue (near) -> cyan -> green -> yellow -> red (far)
+      let r: number, g: number, b: number
+      if (n < 0.25) { const t = n / 0.25; r = 0; g = t * 200; b = 200 }
+      else if (n < 0.5) { const t = (n - 0.25) / 0.25; r = 0; g = 200; b = 200 - t * 200 }
+      else if (n < 0.75) { const t = (n - 0.5) / 0.25; r = t * 255; g = 200; b = 0 }
+      else { const t = (n - 0.75) / 0.25; r = 255; g = 200 - t * 200; b = 0 }
+      imgData.data[i * 4] = r
+      imgData.data[i * 4 + 1] = g
+      imgData.data[i * 4 + 2] = b
+      imgData.data[i * 4 + 3] = 140
+    }
+  } else {
+    const bytes = new Uint8Array(d)
+    const depth = new Float32Array(bytes.buffer)
+    let max = 0
+    for (let i = 0; i < pixels; i++) { const v = depth[i]; if (isFinite(v) && v > max) max = v }
+    if (max === 0) max = 1
+    for (let i = 0; i < pixels; i++) {
+      const v = depth[i]
+      if (!isFinite(v) || v <= 0) { imgData.data[i * 4 + 3] = 0; continue }
+      const n = Math.min(1, v / max)
+      let r: number, g: number, b: number
+      if (n < 0.25) { const t = n / 0.25; r = 0; g = t * 200; b = 200 }
+      else if (n < 0.5) { const t = (n - 0.25) / 0.25; r = 0; g = 200; b = 200 - t * 200 }
+      else if (n < 0.75) { const t = (n - 0.5) / 0.25; r = t * 255; g = 200; b = 0 }
+      else { const t = (n - 0.75) / 0.25; r = 255; g = 200 - t * 200; b = 0 }
+      imgData.data[i * 4] = r
+      imgData.data[i * 4 + 1] = g
+      imgData.data[i * 4 + 2] = b
+      imgData.data[i * 4 + 3] = 140
+    }
+  }
+  ctx.putImageData(imgData, 0, 0)
+}
+
+function ImageFeed({ url, topic, label, depthTopic }: { url: string; topic: string; label: string; depthTopic?: string }) {
   const [paused, setPaused] = useState(false)
+  const [depthOn, setDepthOn] = useState(false)
+  const [depthLoading, setDepthLoading] = useState(false)
+  const depthCanvasRef = useRef<HTMLCanvasElement>(null)
+  const depthOnRef = useRef(false)
+  depthOnRef.current = depthOn
   const stream = useRosbridgeImage(url, topic, 100, paused)
   const fps = useFps(stream.frameCount)
+
+  function fetchDepth() {
+    if (!depthTopic) return
+    sampleFromShared<{ width: number; height: number; encoding: string; data: number[] }>(url, depthTopic)
+      .then((msg) => {
+        if (depthCanvasRef.current) renderDepthOverlay(depthCanvasRef.current, msg)
+      })
+      .catch(() => { /* ignore */ })
+      .finally(() => setDepthLoading(false))
+  }
+
+  // auto-refresh depth every 4s when on
+  useEffect(() => {
+    if (!depthOn || !depthTopic) return
+    fetchDepth()
+    const interval = setInterval(fetchDepth, 4000)
+    return () => clearInterval(interval)
+  }, [depthOn, depthTopic, url])
+
+  function toggleDepth() {
+    if (depthOn) {
+      setDepthOn(false)
+    } else {
+      setDepthLoading(true)
+      setDepthOn(true)
+    }
+  }
+
   return (
-    <div className="w-full h-full bg-black relative group">
+    <div className="w-full h-full bg-black relative group overflow-hidden">
       {stream.src ? (
-        <img src={stream.src} alt={label} className="w-full h-full object-contain" />
+        <img src={stream.src} alt={label} className="w-full h-full object-cover" />
       ) : (
         <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground">
           WAITING
         </div>
       )}
+      {depthTopic && (
+        <canvas
+          ref={depthCanvasRef}
+          className="absolute top-0 left-0 w-full h-full object-cover pointer-events-none"
+          style={{ display: depthOn ? 'block' : 'none' }}
+        />
+      )}
       <div className="absolute top-1 left-2 text-[10px] text-term-blue">{label}</div>
       <div className="absolute top-1 right-2 text-[10px] flex items-center gap-1">
         {stream.src && !paused && <span className="text-term-green status-live">●</span>}
         {paused && <span className="text-term-yellow">PAUSED</span>}
+        {depthOn && <span className="text-term-cyan">DEPTH</span>}
         {stream.src && <span className="text-muted-foreground">{fps}fps f:{stream.frameCount}</span>}
       </div>
-      <button
-        onClick={() => setPaused((p) => !p)}
-        className="absolute bottom-1 right-1 text-[10px] px-1.5 py-0.5 bg-black/60 text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
-      >
-        {paused ? 'play' : 'pause'}
-      </button>
+      <div className="absolute bottom-1 right-1 flex gap-1">
+        {depthTopic && (
+          <button
+            onClick={toggleDepth}
+            disabled={depthLoading}
+            className={`text-[10px] px-1.5 py-0.5 ${depthOn ? 'bg-term-cyan/80 text-black' : 'bg-black/60 text-muted-foreground hover:text-foreground'}`}
+          >
+            {depthLoading ? '...' : depthOn ? 'depth off' : 'depth'}
+          </button>
+        )}
+        <button
+          onClick={() => setPaused((p) => !p)}
+          className="text-[10px] px-1.5 py-0.5 bg-black/60 text-muted-foreground hover:text-foreground"
+        >
+          {paused ? 'play' : 'pause'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -291,7 +403,7 @@ function RobotPosePanel({ url }: { url: string }) {
   const LINES = 9
 
   return (
-    <div className="border bg-card col-span-2 row-span-2">
+    <div className="tui-panel bg-card col-span-2 row-span-2">
       <PanelHeader title="POSE + ODOM" />
       <div className="flex">
         <div className="flex-1 p-2">
@@ -406,6 +518,8 @@ interface HeadState {
   min_angle: number
 }
 
+// @ts-expect-error moved to telemetry grid
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function HeadPositionPanel({ url }: { url: string }) {
   const { data } = useRosbridgeTopic<{ data?: string }>(url, '/mars/head/current_position', 'std_msgs/msg/String', 500)
   const [dragging, setDragging] = useState(false)
@@ -455,7 +569,7 @@ function HeadPositionPanel({ url }: { url: string }) {
   }
 
   return (
-    <div className="border bg-card flex flex-col w-16 shrink-0">
+    <div className="tui-panel bg-card flex flex-col w-16 shrink-0">
       <PanelHeader title="HEAD" />
       <div className="flex-1 flex flex-col items-center py-2 gap-1">
         <span className="text-[10px] text-muted-foreground">{formatNum(max, 0)}°</span>
@@ -488,31 +602,45 @@ function HeadPositionPanel({ url }: { url: string }) {
 
 function SkillStatusPanel({ url }: { url: string }) {
   const { data } = useRosbridgeTopic<{ data?: string }>(url, '/brain/skill_status_update', 'std_msgs/msg/String', 1000)
-  const [text, setText] = useState('')
+  const [skill, setSkill] = useState('')
 
-  function send() {
-    if (!text.trim()) return
-    publishRosbridge(url, '/brain/skill_status_update', 'std_msgs/msg/String', { data: text.trim() })
-    setText('')
+  function runSkill() {
+    if (!skill.trim()) return
+    publishRosbridge(url, '/brain/chat_in', 'std_msgs/msg/String', {
+      data: JSON.stringify({ text: `run ${skill.trim()}`, sender: 'user', timestamp: Date.now() / 1000 }),
+    })
+    setSkill('')
   }
 
+  let statusText = data?.data ?? '--'
+  let statusColor = 'text-muted-foreground'
+  try {
+    if (data?.data) {
+      const parsed = JSON.parse(data.data)
+      statusText = parsed.status ?? parsed.skill ?? data.data
+      if (parsed.status === 'running') statusColor = 'text-term-yellow'
+      else if (parsed.status === 'done' || parsed.status === 'success') statusColor = 'text-term-green'
+      else if (parsed.status === 'error' || parsed.status === 'failed') statusColor = 'text-term-red'
+    }
+  } catch { /* use raw */ }
+
   return (
-    <div className="border bg-card">
-      <PanelHeader title="SKILL STATUS" />
+    <div className="tui-panel bg-card">
+      <PanelHeader title="SKILLS" />
       <div className="p-2 text-xs space-y-2">
         <div className="truncate">
-          <span className="text-term-green">{data?.data ?? '--'}</span>
+          <span className={statusColor}>{statusText}</span>
         </div>
         <div className="flex gap-1">
           <input
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && send()}
-            placeholder="status..."
+            value={skill}
+            onChange={(e) => setSkill(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && runSkill()}
+            placeholder="skill name..."
             className="flex-1 bg-secondary text-foreground text-xs px-2 py-1 border outline-none focus:border-primary min-w-0"
           />
-          <button onClick={send} className="text-xs px-2 py-1 bg-primary text-primary-foreground hover:bg-accent shrink-0">
-            send
+          <button onClick={runSkill} className="text-xs px-2 py-1 bg-primary text-primary-foreground hover:opacity-80 shrink-0">
+            run
           </button>
         </div>
       </div>
@@ -523,7 +651,7 @@ function SkillStatusPanel({ url }: { url: string }) {
 function TTSPanel({ url }: { url: string }) {
   const { data } = useRosbridgeTopic<{ data?: boolean }>(url, '/tts/is_playing', undefined, 500)
   return (
-    <div className="border bg-card">
+    <div className="tui-panel bg-card">
       <PanelHeader title="TTS" />
       <div className="p-2 text-xs">
         <span className={data?.data ? 'text-term-green font-bold' : 'text-muted-foreground'}>
@@ -611,14 +739,14 @@ function ChatPanel({ url }: { url: string }) {
   }
 
   return (
-    <div className="border bg-card flex flex-col">
+    <div className="tui-panel bg-card flex flex-col">
       <PanelHeader title="CHAT" right={messages.length > 0 ? `${messages.length} msgs` : undefined} />
       <div ref={scrollRef} className="max-h-64 overflow-y-auto text-xs font-mono flex-1">
         {messages.length === 0 ? (
           <div className="px-2 py-4 text-muted-foreground text-center">no messages</div>
         ) : (
           messages.map((msg, i) => (
-            <div key={i} className="flex gap-2 px-2 py-0.5 hover:bg-accent/50 leading-tight">
+            <div key={i} className="flex gap-2 px-2 py-0.5 hover:opacity-80/50 leading-tight">
               <span className="text-muted-foreground shrink-0">{formatChatTs(msg.timestamp)}</span>
               <span className={`shrink-0 ${msg.sender === 'user' ? 'text-term-cyan' : 'text-term-green'}`}>
                 {msg.sender === 'user' ? 'user>' : 'agent>'}
@@ -658,7 +786,7 @@ function WaypointsPanel({ url }: { url: string }) {
     if (data?.data) waypoints = JSON.parse(data.data)
   } catch { /* ignore */ }
   return (
-    <div className="border bg-card">
+    <div className="tui-panel bg-card">
       <PanelHeader title="WAYPOINTS" right={waypoints.length > 0 ? `${waypoints.length}` : undefined} />
       <div className="p-2 text-xs max-h-24 overflow-y-auto space-y-0.5">
         {waypoints.length > 0 ? waypoints.map((w, i) => (
@@ -726,26 +854,40 @@ function DrivePanel({ url }: { url: string }) {
   const ang = (k.a ? 1 : 0) - (k.d ? 1 : 0)
 
   return (
-    <div className="border bg-card">
+    <div className="tui-panel bg-card">
       <PanelHeader title="DRIVE" />
-      <div className="p-3 flex flex-col items-center gap-2">
+      <div className="p-4 flex flex-col items-center justify-center gap-3">
         <button
           onClick={() => setActive((a) => !a)}
           className={`text-xs px-3 py-1 font-bold ${active
-            ? 'bg-term-red text-primary-foreground'
-            : 'bg-primary text-primary-foreground hover:bg-accent'
+            ? 'tui-btn-active bg-term-red text-primary-foreground'
+            : 'tui-hatch-dense bg-primary text-primary-foreground hover:opacity-80'
             }`}
         >
           {active ? 'RELEASE' : 'CONTROL'}
         </button>
 
-        <div className="grid grid-cols-3 gap-1.5 w-28">
-          <div />
-          <div className={`text-center text-sm font-bold border px-2 py-1.5 rounded-sm transition-colors ${active ? k.w ? 'bg-term-green text-primary-foreground border-term-green shadow-[0_0_8px_rgba(95,175,95,0.5)]' : 'text-foreground border-muted-foreground/60' : 'text-muted-foreground/30 border-muted-foreground/20'}`}>W</div>
-          <div />
-          <div className={`text-center text-sm font-bold border px-2 py-1.5 rounded-sm transition-colors ${active ? k.a ? 'bg-term-green text-primary-foreground border-term-green shadow-[0_0_8px_rgba(95,175,95,0.5)]' : 'text-foreground border-muted-foreground/60' : 'text-muted-foreground/30 border-muted-foreground/20'}`}>A</div>
-          <div className={`text-center text-sm font-bold border px-2 py-1.5 rounded-sm transition-colors ${active ? k.s ? 'bg-term-green text-primary-foreground border-term-green shadow-[0_0_8px_rgba(95,175,95,0.5)]' : 'text-foreground border-muted-foreground/60' : 'text-muted-foreground/30 border-muted-foreground/20'}`}>S</div>
-          <div className={`text-center text-sm font-bold border px-2 py-1.5 rounded-sm transition-colors ${active ? k.d ? 'bg-term-green text-primary-foreground border-term-green shadow-[0_0_8px_rgba(95,175,95,0.5)]' : 'text-foreground border-muted-foreground/60' : 'text-muted-foreground/30 border-muted-foreground/20'}`}>D</div>
+        <div className="grid grid-cols-3 gap-2 w-36 select-none">
+          {(['', 'w', '', 'a', 's', 'd'] as const).map((key, i) => {
+            if (!key) return <div key={i} />
+            const pressed = k[key]
+            return (
+              <div
+                key={key}
+                onMouseDown={() => active && setKeys(prev => ({ ...prev, [key]: true }))}
+                onMouseUp={() => active && setKeys(prev => ({ ...prev, [key]: false }))}
+                onMouseLeave={() => active && setKeys(prev => ({ ...prev, [key]: false }))}
+                className={`text-center text-base font-bold border-2 py-2.5 rounded transition-colors cursor-pointer ${active
+                  ? pressed
+                    ? 'bg-term-green text-primary-foreground border-term-green shadow-[0_0_10px_rgba(95,175,95,0.6)]'
+                    : 'text-foreground border-muted-foreground/60 hover:bg-accent/40 hover:border-muted-foreground'
+                  : 'text-muted-foreground/30 border-muted-foreground/20'
+                  }`}
+              >
+                {key.toUpperCase()}
+              </div>
+            )
+          })}
         </div>
         <div className="text-[10px] text-muted-foreground">
           lin:{(lin * LIN_SPEED).toFixed(1)} ang:{(ang * ANG_SPEED).toFixed(1)}
@@ -856,7 +998,7 @@ function ArmControlPanel({ url }: { url: string }) {
   const pos = armState?.position
 
   return (
-    <div className="border bg-card col-span-2">
+    <div className="tui-panel bg-card col-span-2">
       <PanelHeader title="ARM CONTROL" right={active ? 'ACTIVE' : undefined} />
       <div className="p-3 flex gap-4">
         {/* joint list */}
@@ -870,7 +1012,7 @@ function ArmControlPanel({ url }: { url: string }) {
               <div
                 key={i}
                 onClick={() => active && setSelectedJoint(i)}
-                className={`flex items-center gap-2 px-1 py-0.5 cursor-pointer rounded-sm transition-colors ${isSelected ? 'bg-accent' : 'hover:bg-accent/50'}`}
+                className={`flex items-center gap-2 px-1 py-0.5 cursor-pointer rounded-sm transition-colors ${isSelected ? 'bg-accent' : 'hover:opacity-80/50'}`}
               >
                 <span className={`w-4 shrink-0 ${isSelected ? 'text-term-cyan' : 'text-muted-foreground'}`}>{i + 1}</span>
                 <span className={`w-14 shrink-0 ${isSelected ? 'text-foreground' : 'text-muted-foreground'}`}>{j.name}</span>
@@ -894,7 +1036,7 @@ function ArmControlPanel({ url }: { url: string }) {
             onClick={() => setActive(a => !a)}
             className={`text-xs px-3 py-1 font-bold ${active
               ? 'bg-term-red text-primary-foreground'
-              : 'bg-primary text-primary-foreground hover:bg-accent'
+              : 'bg-primary text-primary-foreground hover:opacity-80'
               }`}
           >
             {active ? 'RELEASE' : 'CONTROL'}
@@ -946,7 +1088,7 @@ function WaypointSendPanel({ url }: { url: string }) {
   }
 
   return (
-    <div className="border bg-card">
+    <div className="tui-panel bg-card">
       <PanelHeader title="SEND WAYPOINTS" />
       <div className="p-2 flex gap-1">
         <input
@@ -956,7 +1098,7 @@ function WaypointSendPanel({ url }: { url: string }) {
           placeholder='[{"name":"home","x":0,"y":0}]'
           className="flex-1 bg-secondary text-foreground text-xs px-2 py-1 border outline-none focus:border-primary"
         />
-        <button onClick={send} className="text-xs px-2 py-1 bg-primary text-primary-foreground hover:bg-accent">
+        <button onClick={send} className="text-xs px-2 py-1 bg-primary text-primary-foreground hover:opacity-80">
           send
         </button>
       </div>
@@ -1073,7 +1215,7 @@ function LidarPanel({ url, paused }: { url: string; paused: boolean }) {
   }, [data])
 
   return (
-    <div className="border bg-card w-[310px] shrink-0">
+    <div className="tui-panel bg-card w-[310px] shrink-0">
       <PanelHeader title="LIDAR" right="/scan" />
       <div className="p-1">
         <canvas ref={canvasRef} width={298} height={298} className="w-full" style={{ aspectRatio: '1' }} />
@@ -1088,7 +1230,7 @@ function EventRow({ event }: { event: AgentEvent }) {
   const levelClass = LEVEL_STYLES[event.level] ?? 'text-foreground'
   const typeClass = TYPE_STYLES[event.type] ?? 'text-muted-foreground'
   return (
-    <div className="flex gap-2 px-2 py-0.5 hover:bg-accent/50 leading-tight">
+    <div className="flex gap-2 px-2 py-0.5 hover:opacity-80/50 leading-tight">
       <span className="text-muted-foreground shrink-0">{formatTs(event.ts)}</span>
       <span className={`shrink-0 uppercase font-bold ${levelClass}`}>{event.level.padEnd(5)}</span>
       <span className={`shrink-0 ${typeClass}`}>[{event.type}]</span>
@@ -1358,7 +1500,7 @@ function LidarOccupancy({ url, paused }: { url: string; paused: boolean }) {
   }, [scanData])
 
   return (
-    <div className="border bg-card w-[310px] shrink-0">
+    <div className="tui-panel bg-card w-[310px] shrink-0">
       <PanelHeader title="LIDAR MAP" right={`${frameRef.current}`} />
       <div className="p-1">
         <canvas ref={canvasRef} width={OCC_SIZE} height={OCC_SIZE} className="w-full" style={{ aspectRatio: '1', imageRendering: 'pixelated' }} />
@@ -1376,9 +1518,8 @@ function LidarGroup({ url }: { url: string }) {
       <LidarPanel url={url} paused={paused} />
       <button
         onClick={() => setPaused((p) => !p)}
-        className={`border-y px-2 text-xs flex items-center ${
-          paused ? 'bg-term-yellow/10 text-term-yellow' : 'bg-card text-muted-foreground hover:text-foreground'
-        }`}
+        className={`border-y px-2 text-xs flex items-center ${paused ? 'tui-hatch-dense bg-term-yellow/10 text-term-yellow' : 'tui-hatch-subtle bg-card text-muted-foreground hover:text-foreground'
+          }`}
       >
         {paused ? '>' : '||'}
       </button>
@@ -1417,23 +1558,20 @@ function AgentPage() {
 
       {/* cameras + info */}
       <div className="flex flex-wrap gap-3">
-        <div className="flex gap-0 shrink-0">
-          <div className="border bg-card flex flex-col w-[400px]">
-            <PanelHeader title="MAIN CAMERA" right="/main_camera/left" />
-            <div className="aspect-video bg-black">
-              {url ? (
-                <ImageFeed url={url} topic="/mars/main_camera/left/image_raw/compressed" label="MAIN" />
-              ) : (
-                <SimulatedFeed agent={agent} />
-              )}
-            </div>
+        <div className="tui-panel bg-card flex flex-col w-[400px] shrink-0">
+          <PanelHeader title="MAIN CAMERA" right="/main_camera/left" />
+          <div className="aspect-video bg-black overflow-hidden">
+            {url ? (
+              <ImageFeed url={url} topic="/mars/main_camera/left/image_raw/compressed" label="MAIN" depthTopic="/mars/main_camera/depth/image_rect_raw" />
+            ) : (
+              <SimulatedFeed agent={agent} />
+            )}
           </div>
-          {url && <HeadPositionPanel url={url} />}
         </div>
 
-        <div className="border bg-card flex flex-col w-[400px] shrink-0">
+        <div className="tui-panel bg-card flex flex-col w-[400px] shrink-0">
           <PanelHeader title="ARM CAMERA" right="/arm/image_raw" />
-          <div className="aspect-video bg-black">
+          <div className="aspect-video bg-black overflow-hidden">
             {url ? (
               <ImageFeed url={url} topic="/mars/arm/image_raw/compressed" label="ARM" />
             ) : (
@@ -1442,7 +1580,7 @@ function AgentPage() {
           </div>
         </div>
 
-        <div className="border bg-card flex flex-col flex-1 min-w-[200px]">
+        <div className="tui-panel bg-card flex flex-col flex-1 min-w-[200px]">
           <PanelHeader title="AGENT INFO" />
           <div className="p-3 text-xs space-y-2 flex-1">
             <TelemetryRow label="name" value={agent.name} />
@@ -1462,19 +1600,15 @@ function AgentPage() {
           <DrivePanel url={url} />
           <SkillStatusPanel url={url} />
           <TTSPanel url={url} />
-          {/* <WaypointsPanel url={url} /> */}
         </div>
       )}
-
-      {/* arm control */}
-      {/* {url && <ArmControlPanel url={url} />} */}
 
       {/* chat */}
       {url && <ChatPanel url={url} />}
 
       {/* location track */}
       {url && (
-        <div className="border bg-card flex flex-col" style={{ maxWidth: 300 }}>
+        <div className="tui-panel bg-card flex flex-col" style={{ maxWidth: 300 }}>
           <PanelHeader title="LOCATION TRACK" right="/odom" />
           <div className="p-2 aspect-square max-h-64">
             <LiveLocationTrack url={url} />
@@ -1483,7 +1617,7 @@ function AgentPage() {
       )}
 
       {/* event log */}
-      <div className="border bg-card flex flex-col">
+      <div className="tui-panel bg-card flex flex-col">
         <PanelHeader title="EVENT LOG" right={`${agent.events.length} entries`} />
         <div className="max-h-48 overflow-y-auto text-xs">
           {agent.events.length === 0 ? (

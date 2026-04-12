@@ -37,7 +37,7 @@ function RootLayout() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="border-b px-4 py-2 flex items-center justify-between">
+      <header className="tui-topbar px-4 py-2 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <Link to="/" className="text-primary no-underline font-bold">
             [LMAO]
@@ -55,9 +55,9 @@ function RootLayout() {
       </header>
 
       <div className="flex flex-1">
-        <nav className="w-48 border-r p-2 flex flex-col gap-1">
+        <nav className="w-48 tui-sidebar p-2 flex flex-col gap-1">
           {/* orchestrator section */}
-          <div className="text-xs text-muted-foreground px-2 py-1 border-b mb-1">
+          <div className="text-xs text-muted-foreground px-2 py-1 border-b mb-1 tui-hatch-dense">
             ORCHESTRATOR
           </div>
           <Link
@@ -71,7 +71,7 @@ function RootLayout() {
           </Link>
 
           {/* agents section */}
-          <div className="text-xs text-muted-foreground px-2 py-1 border-b mb-1 mt-2">
+          <div className="text-xs text-muted-foreground px-2 py-1 border-b mb-1 mt-2 tui-hatch-dense">
             AGENTS
           </div>
           {AGENTS.map((agent) => (
@@ -91,7 +91,7 @@ function RootLayout() {
           ))}
 
           {/* fleet health widget */}
-          <div className="mt-auto border-t pt-2 px-2 text-xs text-muted-foreground space-y-0.5">
+          <div className="mt-auto border-t pt-2 px-2 text-xs text-muted-foreground space-y-0.5 tui-hatch-subtle">
             <div>
               orch:{' '}
               <span className={orchConnected ? 'text-term-green' : 'text-term-red'}>
