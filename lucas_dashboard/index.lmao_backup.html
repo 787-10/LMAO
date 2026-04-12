@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>LMAO</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #08080f;
+      color: #ddd;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      padding: 16px;
+      display: grid;
+      grid-template-columns: 1fr 260px 200px;
+      grid-template-rows: auto 1fr;
+      gap: 12px;
+      height: 100vh;
+    }
+
+    header {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    h1 { font-size: 14px; letter-spacing: 3px; color: #7df; }
+    #conn { font-size: 10px; padding: 2px 8px; border-radius: 10px; background: #111; color: #555; }
+    #conn.ok  { background: #0d2b0d; color: #4f4; }
+    #conn.err { background: #2b0d0d; color: #f55; }
+
+    .panel {
+      background: #0c0c1a;
+      border: 1px solid #1a1a2e;
+      border-radius: 6px;
+      padding: 12px;
+    }
+    .panel h2 {
+      font-size: 9px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #7df;
+      margin-bottom: 10px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #1a1a2e;
+    }
+
+    /* LEFT: camera on top, skills below */
+    .left {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 0;
+    }
+
+    #cam-box {
+      width: 100%;
+      height: 320px;
+      background: #000;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #333;
+      overflow: hidden;
+    }
+    #cam-box img { width: 100%; height: 100%; object-fit: contain; }
+    #cam-fps { font-size: 9px; color: #444; margin-top: 4px; }
+
+    #skills-list {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      overflow-y: auto;
+      flex: 1;
+    }
+    .skill {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #0e0e1e;
+      border: 1px solid #1a1a2e;
+      border-radius: 4px;
+      padding: 6px 10px;
+    }
+    .skill.running { border-color: #7df; }
+    .skill-name { color: #bbb; font-size: 11px; }
+    .skill-id   { font-size: 9px; color: #444; margin-top: 1px; }
+    .run-btn {
+      background: #0d200d;
+      color: #4f4;
+      border: 1px solid #1e3e1e;
+      border-radius: 3px;
+      padding: 4px 10px;
+      cursor: pointer;
+      font-family: 'Courier New', monospace;
+      font-size: 11px;
+    }
+    .run-btn:hover   { background: #1a2a1a; }
+    .run-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* MIDDLE: costmap */
+    .middle {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 0;
+    }
+
+    #costmap-canvas {
+      width: 100%;
+      aspect-ratio: 1;
+      background: #000;
+      border-radius: 4px;
+      image-rendering: pixelated;
+      display: block;
+    }
+    #costmap-status { font-size: 9px; color: #444; margin-top: 4px; }
+
+    /* RIGHT: scout status */
+    .right {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .stat {
+      display: flex;
+      justify-content: space-between;
+      padding: 5px 0;
+      border-bottom: 1px solid #111;
+    }
+    .stat:last-child { border-bottom: none; }
+    .stat-l { color: #666; }
+    .stat-v { color: #ccc; }
+    .good { color: #4f4 !important; }
+    .warn { color: #fa0 !important; }
+    .crit { color: #f44 !important; }
+
+    .bat-bar { height: 4px; background: #1a1a1a; border-radius: 2px; margin-top: 6px; overflow: hidden; }
+    .bat-fill { height: 100%; border-radius: 2px; transition: width .6s; }
+
+    /* Skill output */
+    #output { font-size: 10px; overflow-y: auto; flex: 1; }
+    .out-entry { padding: 6px 0; border-bottom: 1px solid #111; }
+    .out-ts    { color: #444; font-size: 9px; }
+    .out-skill { color: #7df; margin: 2px 0; }
+    .out-ok    { color: #4f4; }
+    .out-fail  { color: #f44; }
+    .out-body  { color: #888; white-space: pre-wrap; word-break: break-all; font-size: 9px; max-height: 100px; overflow-y: auto; margin-top: 2px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>LMAO</h1>
+  <span id="conn">connecting…</span>
+</header>
+
+<!-- LEFT -->
+<div class="left">
+  <div class="panel">
+    <h2>Camera</h2>
+    <div id="cam-box">no feed</div>
+    <div id="cam-fps">—</div>
+  </div>
+
+  <div class="panel" style="flex:1;min-height:0;display:flex;flex-direction:column">
+    <h2>Skills</h2>
+    <div id="skills-list"><div style="color:#444">loading…</div></div>
+  </div>
+</div>
+
+<!-- MIDDLE: costmap -->
+<div class="middle">
+  <div class="panel" style="flex:1;min-height:0;display:flex;flex-direction:column">
+    <h2>Local Map</h2>
+    <canvas id="costmap-canvas" width="120" height="120"></canvas>
+    <div id="costmap-status">waiting…</div>
+  </div>
+</div>
+
+<!-- RIGHT -->
+<div class="right">
+  <div class="panel">
+    <h2>Scout — mars-the-18th</h2>
+    <div class="stat"><span class="stat-l">Battery</span><span class="stat-v" id="bat-v">—</span></div>
+    <div class="stat"><span class="stat-l">Charge</span><span class="stat-v" id="bat-p">—</span></div>
+    <div class="stat"><span class="stat-l">X</span><span class="stat-v" id="pos-x">—</span></div>
+    <div class="stat"><span class="stat-l">Y</span><span class="stat-v" id="pos-y">—</span></div>
+    <div class="stat"><span class="stat-l">Heading</span><span class="stat-v" id="pos-hdg">—</span></div>
+    <div class="stat"><span class="stat-l">Thermal</span><span class="stat-v" id="thermal">—</span></div>
+    <div class="bat-bar"><div class="bat-fill" id="bat-fill" style="width:0%"></div></div>
+  </div>
+
+  <div class="panel" style="flex:1;min-height:0;display:flex;flex-direction:column">
+    <h2>Output</h2>
+    <div id="output"><div style="color:#333">run a skill…</div></div>
+  </div>
+</div>
+
+<script>
+const ROBOT = "ws://172.17.30.66:9090";
+let ws, reconnectTimer, msgId = 0, runningSkill = null;
+let frameCount = 0, lastFpsT = Date.now();
+let pendingFrame = null, rafPending = false, camImg = null, currentBlobUrl = null;
+const fragments = {};
+let costmapFrames = 0;
+
+function sub(topic, type, throttle=0) {
+  ws.send(JSON.stringify({ op:"subscribe", id:`s${msgId++}`, topic, type, throttle_rate:throttle }));
+}
+
+function connect() {
+  ws = new WebSocket(ROBOT);
+  ws.onopen = () => {
+    document.getElementById("conn").textContent = "connected";
+    document.getElementById("conn").className = "ok";
+    sub("/mars/main_camera/left/image_raw/compressed", "sensor_msgs/msg/CompressedImage", 100);
+    sub("/battery_state",          "sensor_msgs/msg/BatteryState",      1000);
+    sub("/odom",                   "nav_msgs/msg/Odometry",              500);
+    sub("/brain/available_skills",      "brain_messages/msg/AvailableSkills", 0);
+    sub("/brain/skill_status_update",   "std_msgs/msg/String",               0);
+    sub("/scan", "sensor_msgs/msg/LaserScan", 500);
+  };
+  ws.onmessage = (ev) => {
+    let m; try {
+      const fixed = ev.data.replace(/\[,/g, '[null,').replace(/,(?=[\],])/g, ',null');
+      m = JSON.parse(fixed);
+    } catch { return; }
+    if (m.op === "action_result") { handleResult(m); return; }
+    // reassemble fragmented messages
+    if (m.op === "fragment") {
+      const key = m.id;
+      if (!fragments[key]) fragments[key] = { parts: [], total: m.total };
+      fragments[key].parts[m.num] = m.data;
+      if (fragments[key].parts.filter(Boolean).length === m.total) {
+        const full = JSON.parse(fragments[key].parts.join(""));
+        delete fragments[key];
+        m = full;
+      } else return;
+    }
+    if (m.op !== "publish") return;
+    switch (m.topic) {
+      case "/mars/main_camera/left/image_raw/compressed": updateCamera(m.msg); break;
+      case "/battery_state":          updateBattery(m.msg); break;
+      case "/odom":                   updateOdom(m.msg);    break;
+      case "/brain/available_skills": renderSkills(m.msg);  break;
+      case "/brain/skill_status_update":
+        try { const u = JSON.parse(m.msg.data||m.msg); if (u.status==="completed"||u.status==="failed") setRunning(null); } catch {}
+        break;
+      case "/scan": updateScan(m.msg); break;
+    }
+  };
+  ws.onclose = () => {
+    document.getElementById("conn").textContent = "disconnected…";
+    document.getElementById("conn").className = "err";
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 3000);
+  };
+}
+
+function updateCamera(msg) {
+  // Always overwrite with latest frame — rAF renders whichever is newest
+  pendingFrame = msg;
+  if (rafPending) return;
+  rafPending = true;
+  requestAnimationFrame(() => {
+    rafPending = false;
+    const m = pendingFrame; pendingFrame = null;
+    if (!m) return;
+    try {
+      const box = document.getElementById("cam-box");
+      if (!camImg) { box.innerHTML = ""; camImg = document.createElement("img"); box.appendChild(camImg); }
+      const raw = m.data;
+      const bytes = typeof raw === "string"
+        ? Uint8Array.from(atob(raw.replace(/\s/g,"")), c => c.charCodeAt(0))
+        : new Uint8Array(raw);
+      const blob = new Blob([bytes], { type:"image/jpeg" });
+      const newUrl = URL.createObjectURL(blob);
+      camImg.src = newUrl;
+      if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
+      currentBlobUrl = newUrl;
+      frameCount++;
+      const now = Date.now();
+      if (now - lastFpsT >= 1000) {
+        document.getElementById("cam-fps").textContent = frameCount + " fps";
+        frameCount = 0; lastFpsT = now;
+      }
+    } catch(e) { document.getElementById("cam-fps").textContent = "err: "+e.message; }
+  });
+}
+
+function updateBattery(msg) {
+  const pct = Math.round(msg.percentage * 100);
+  const cls = pct > 40 ? "good" : pct > 20 ? "warn" : "crit";
+  document.getElementById("bat-v").textContent = msg.voltage.toFixed(2) + " V";
+  const pEl = document.getElementById("bat-p");
+  pEl.textContent = pct + "%";
+  pEl.className = "stat-v " + cls;
+  const fill = document.getElementById("bat-fill");
+  fill.style.width = pct + "%";
+  fill.style.background = pct > 40 ? "#4f4" : pct > 20 ? "#fa0" : "#f44";
+}
+
+function updateOdom(msg) {
+  const p = msg.pose.pose, o = p.orientation;
+  const yaw = Math.atan2(2*(o.w*o.z+o.x*o.y), 1-2*(o.y*o.y+o.z*o.z)) * 180/Math.PI;
+  document.getElementById("pos-x").textContent   = p.position.x.toFixed(3) + " m";
+  document.getElementById("pos-y").textContent   = p.position.y.toFixed(3) + " m";
+  document.getElementById("pos-hdg").textContent = yaw.toFixed(1) + "°";
+}
+
+const DISPLAY_MAX_R = 8;
+let scanCanvas, scanCtx;
+
+function updateScan(scan) {
+  if (!scan || !scan.ranges) return;
+  if (!scanCanvas) {
+    scanCanvas = document.getElementById("costmap-canvas");
+    scanCtx = scanCanvas.getContext("2d");
+  }
+  const W = scanCanvas.offsetWidth || 240;
+  const H = scanCanvas.offsetHeight || 240;
+  if (scanCanvas.width !== W || scanCanvas.height !== H) {
+    scanCanvas.width = W; scanCanvas.height = H;
+  }
+  const ctx = scanCtx;
+  const cx = W / 2, cy = H / 2;
+  const maxRange = Math.min(scan.range_max || 12, DISPLAY_MAX_R);
+  const ringCount = 4;
+  const scale = (Math.min(cx, cy) - 10) / maxRange;
+
+  ctx.fillStyle = "#0a0a0a";
+  ctx.fillRect(0, 0, W, H);
+
+  // range rings
+  ctx.strokeStyle = "#303030"; ctx.lineWidth = 0.5;
+  for (let i = 1; i <= ringCount; i++) {
+    const r = (i / ringCount) * (Math.min(cx, cy) - 10);
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  // crosshair
+  ctx.beginPath();
+  ctx.moveTo(cx, 0); ctx.lineTo(cx, H);
+  ctx.moveTo(0, cy); ctx.lineTo(W, cy);
+  ctx.stroke();
+
+  // range labels
+  ctx.font = "8px monospace"; ctx.fillStyle = "#6c6c6c";
+  for (let i = 1; i <= ringCount; i++) {
+    const r = (i / ringCount) * (Math.min(cx, cy) - 10);
+    ctx.fillText(((i / ringCount) * maxRange).toFixed(1) + "m", cx + 2, cy - r + 10);
+  }
+
+  const { ranges, angle_min: amin, angle_increment: ainc, range_min: rmin = 0.15 } = scan;
+
+  // scan line
+  ctx.beginPath(); let started = false;
+  for (let i = 0; i < ranges.length; i++) {
+    const r = ranges[i];
+    if (!isFinite(r) || r < rmin || r > maxRange) { started = false; continue; }
+    const angle = amin + i * ainc;
+    const px = cx - Math.sin(angle) * r * scale;  // ROS x=forward, y=left → canvas
+    const py = cy - Math.cos(angle) * r * scale;
+    if (!started) { ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py);
+  }
+  ctx.strokeStyle = "#5faf5f"; ctx.lineWidth = 1; ctx.stroke();
+
+  // colored points
+  let pts = 0;
+  for (let i = 0; i < ranges.length; i++) {
+    const r = ranges[i];
+    if (!isFinite(r) || r < rmin || r > maxRange) continue;
+    const angle = amin + i * ainc;
+    const px = cx - Math.sin(angle) * r * scale;
+    const py = cy - Math.cos(angle) * r * scale;
+    const norm = r / maxRange;
+    ctx.fillStyle = `rgb(${Math.floor(norm*215)},${Math.floor((1-norm)*175)},95)`;
+    ctx.fillRect(px - 0.5, py - 0.5, 1.5, 1.5);
+    pts++;
+  }
+
+  // robot triangle (forward = up)
+  ctx.fillStyle = "#5f87af";
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - 6); ctx.lineTo(cx - 4, cy + 4); ctx.lineTo(cx + 4, cy + 4);
+  ctx.closePath(); ctx.fill();
+
+  document.getElementById("costmap-status").textContent = `${pts} pts`;
+}
+
+function renderSkills(msg) {
+  const list = document.getElementById("skills-list");
+  const skills = msg.skills || [];
+  if (!skills.length) { list.innerHTML = '<div style="color:#444">none</div>'; return; }
+  list.innerHTML = "";
+  skills.forEach(sk => {
+    const id   = sk.skill_type || sk.id || "?";
+    const name = sk.display_name || sk.name || id;
+    const el = document.createElement("div");
+    el.className = "skill"; el.id = `sk-${id.replace(/\//g,"-")}`;
+    el.innerHTML = `<div><div class="skill-name">${name}</div><div class="skill-id">${id}</div></div>
+      <button class="run-btn" onclick="runSkill('${id}','${name}')">▶ RUN</button>`;
+    list.appendChild(el);
+  });
+}
+
+function runSkill(id, name) {
+  if (runningSkill) return;
+  appendOutput(id, name, null, null);
+  setRunning(id);
+  ws.send(JSON.stringify({
+    op:"send_action_goal", id:`act${msgId++}`,
+    action:"/execute_skill",
+    action_type:"brain_messages/action/ExecuteSkill",
+    args:{ skill_type:id, inputs:"{}" }
+  }));
+}
+
+function handleResult(m) {
+  const id = runningSkill; if (!id) return;
+  const res = m.values || {};
+  const ok  = res.success === true || res.success_type === "success";
+  const entry = document.getElementById(`out-${id.replace(/\//g,"-")}`);
+  if (entry) entry.innerHTML = `
+    <div class="out-ts">${new Date().toLocaleTimeString()}</div>
+    <div class="out-skill">${id}</div>
+    ${ok ? `<div class="out-ok">✓ success</div><div class="out-body">${fmt(res.message)}</div>`
+         : `<div class="out-fail">✗ ${res.message||"failed"}</div>`}`;
+  // Parse state JSON from get_state skills to update dashboard fields
+  if (ok && res.message) {
+    try {
+      const state = JSON.parse(res.message);
+      if (state.thermal_hottest_c != null)
+        document.getElementById("thermal").textContent = state.thermal_hottest_c.toFixed(1) + " °C";
+      if (state.battery && state.battery.voltage != null) {
+        document.getElementById("bat-v").textContent = state.battery.voltage.toFixed(2) + " V";
+        const pct = Math.round(state.battery.percentage);
+        const cls = pct > 40 ? "good" : pct > 20 ? "warn" : "crit";
+        const pEl = document.getElementById("bat-p");
+        pEl.textContent = pct + "%"; pEl.className = "stat-v " + cls;
+        const fill = document.getElementById("bat-fill");
+        fill.style.width = pct + "%";
+        fill.style.background = pct > 40 ? "#4f4" : pct > 20 ? "#fa0" : "#f44";
+      }
+      if (state.odom) {
+        if (state.odom.x != null) document.getElementById("pos-x").textContent = state.odom.x.toFixed(3) + " m";
+        if (state.odom.y != null) document.getElementById("pos-y").textContent = state.odom.y.toFixed(3) + " m";
+        if (state.odom.theta_deg != null) document.getElementById("pos-hdg").textContent = state.odom.theta_deg.toFixed(1) + "°";
+      }
+    } catch {}
+  }
+  setRunning(null);
+}
+
+function setRunning(id) {
+  runningSkill = id;
+  document.querySelectorAll(".run-btn").forEach(b => b.disabled = !!id);
+  document.querySelectorAll(".skill").forEach(el => el.classList.remove("running"));
+  if (id) { const el = document.getElementById(`sk-${id.replace(/\//g,"-")}`); if(el) el.classList.add("running"); }
+}
+
+function appendOutput(id, name, ok, msg) {
+  const out = document.getElementById("output");
+  const el  = document.createElement("div");
+  el.className = "out-entry"; el.id = `out-${id.replace(/\//g,"-")}`;
+  el.innerHTML = `
+    <div class="out-ts">${new Date().toLocaleTimeString()}</div>
+    <div class="out-skill">${name||id}</div>
+    ${ok===null ? '<div style="color:#7df;font-size:10px">running…</div>'
+      : ok ? `<div class="out-ok">✓</div><div class="out-body">${fmt(msg)}</div>`
+           : `<div class="out-fail">✗ ${msg}</div>`}`;
+  out.prepend(el);
+}
+
+function fmt(s) { try { return JSON.stringify(JSON.parse(s),null,2); } catch { return s||""; } }
+
+connect();
+</script>
+</body>
+</html>

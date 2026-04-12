@@ -261,6 +261,85 @@ Drop into `innate-os/agents/`.
 | `/odom` | **unverified** | `ros2 topic hz` at kickoff |
 | `/mavros/imu/data` | **~100 Hz** (default) | mavros default; confirm after launching |
 
+---
+
+## Skills built at RoboHacks 2026 (team-authored)
+
+All skills live in `skills/` and are auto-loaded by the brain. Invoke via dashboard or agent.
+
+### FDIR: LiDAR ↔ Camera cross-validation — `lidar_cross_validate.py`
+
+**What it does:** Compares lidar `/scan` occupancy against stereo depth `/mars/main_camera/depth/image_rect_raw` to detect sensor disagreement. Projects lidar points into the camera plane and checks whether the depth image agrees in each angular sector. A sector where lidar says "obstacle" but depth says "clear" (or vice versa) raises a fault.
+
+**Verdict outputs:** `nominal` | `fault` (with per-sector breakdown)
+
+**Key parameters:**
+- Valid depth range: 0.25–2.0 m (hardware limit of stereo SGM)
+- 60-pixel border masked (invalid SGM margin)
+- Sector angular resolution: configurable, default 15°
+
+**Demo:** Place an object at ~0.5–1.5 m. Cover the camera (or lidar). Skill detects the disagreement.
+
+---
+
+### FDIR: Encoder ↔ IMU stuck detection — `encoder_imu_odometry_check.py`
+
+**What it does:** Drives the robot forward for 4 seconds while simultaneously reading wheel encoder odometry (`/odom`) and Pixhawk IMU acceleration (via pymavlink). If the encoders report displacement ≥ 10 cm but the IMU detects no physical motion on 2+ axes → **STUCK fault**.
+
+**Verdict outputs:** `stuck` | `moving` | `no_encoder_movement` | `error`
+
+**Key parameters:**
+- Drive speed: 0.2 m/s for 4 s
+- Min encoder delta to trigger check: 0.10 m
+- IMU motion threshold: 150 mg per axis (gravity-subtracted)
+- Stuck declared if 2+ axes are static
+
+**Axis mapping (physical on MARS):**
+- `yacc` → X (forward/back)
+- `zacc` → Y (left/right)
+- `xacc` → Z (up/down, dominated by gravity ~−1000 mg when flat)
+
+**Demo:** Physically block the robot or hold it in place. Run the skill. Encoders accumulate displacement; IMU stays flat → `stuck` verdict.
+
+**Prerequisite:** Pixhawk connected on `/dev/ttyACM2`. Run `sudo systemctl stop ModemManager` first.
+
+---
+
+### IMU motion check (standalone) — `movement_check.py`
+
+**What it does:** 2-second IMU snapshot to determine if the robot is physically moving — no driving involved. Reads all 3 axes with gravity subtraction. If 2+ axes are below 150 mg → `stuck`. Useful as a fast pre-check or called by an agent to confirm robot state.
+
+**Verdict outputs:** `stuck` | `moving` | `error`
+
+---
+
+### Navigate to position — `navigate_to_position` (innate-os built-in)
+
+Available via the dashboard Skills panel with inline X / Y / θ parameter inputs. Sends a Nav2 goal in the **map frame** (same coordinate system as `/amcl_pose`). Coordinates shown in the LOCATION TRACK panel match these inputs directly.
+
+**Float serialization note:** All parameter values are sent as floats (e.g. `0.0` not `0`). The dashboard enforces this automatically.
+
+---
+
+### IMU dashboard stream — `imu_odom_pub2.py` (run manually on Jetson)
+
+Not a skill — a standalone ROS2 node that publishes Pixhawk IMU data to `/robot/imu_odom` at 50 Hz as a JSON string. Required for the IMU ACCEL panel on the dashboard.
+
+```bash
+sudo systemctl stop ModemManager
+python3 ~/skills/imu_odom_pub2.py
+```
+
+Published JSON: `{ "xacc": int, "yacc": int, "zacc": int, "roll": float, "pitch": float, "yaw": float }` (acceleration in milli-g, angles in degrees)
+
+---
+
+### Why raw IMU cannot give X/Y position (important for judges)
+
+The Pixhawk accelerometer is used **only for motion detection (binary yes/no)**, not position tracking. Double-integrating raw accelerometer readings to get position is fundamentally broken without GPS: even a 1 mg bias accumulates ~5 m of drift in 10 seconds. Drones solve this with GPS + barometer fused into an EKF. Indoors without GPS, the IMU is only trusted for ~100 ms before drift dominates. Our FDIR uses it correctly: "did the robot physically move?" not "where did it go?"
+
+---
+
 ## Open questions to resolve with staff at kickoff
 
 - How many physical robots per team?
