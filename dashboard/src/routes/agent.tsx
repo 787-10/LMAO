@@ -7,7 +7,7 @@ import {
   type AgentEvent,
   type EventLevel,
 } from '@/lib/agents'
-import { useRosbridgeImage, useRosbridgeTopic, useRosbridgeStatus, publishRosbridge, sampleFromShared } from '@/hooks/useRosbridge'
+import { useRosbridgeImage, useRosbridgeTopic, useRosbridgeStatus, publishRosbridge, sampleFromShared, sendActionGoal } from '@/hooks/useRosbridge'
 
 export const agentRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -643,6 +643,211 @@ function SkillStatusPanel({ url }: { url: string }) {
             run
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+interface SkillMsg { id: string; skill_type?: string; display_name?: string; name?: string }
+interface AvailableSkillsMsg { skills: SkillMsg[] }
+
+interface SkillResult { ok: boolean; message: string; ts: string }
+
+// Skills that require inline parameter inputs before running
+const SKILL_PARAMS: Record<string, { label: string; key: string; placeholder: string }[]> = {
+  'navigate_to_position': [
+    { label: 'X', key: 'x', placeholder: '0.0' },
+    { label: 'Y', key: 'y', placeholder: '0.0' },
+    { label: 'θ', key: 'theta', placeholder: '0.0' },
+  ],
+}
+
+function skillParamKey(id: string): string | null {
+  for (const key of Object.keys(SKILL_PARAMS)) {
+    if (id.includes(key)) return key
+  }
+  return null
+}
+
+function SkillsPanel({ url }: { url: string }) {
+  const { data } = useRosbridgeTopic<AvailableSkillsMsg>(
+    url, '/brain/available_skills', 'brain_messages/msg/AvailableSkills',
+  )
+  const [running, setRunning] = useState<string | null>(null)
+  const [results, setResults] = useState<Record<string, SkillResult>>({})
+  const [params, setParams] = useState<Record<string, Record<string, string>>>({})
+
+  const skills = data?.skills ?? []
+
+  function setParam(skillId: string, key: string, value: string) {
+    setParams(p => ({ ...p, [skillId]: { ...p[skillId], [key]: value } }))
+  }
+
+  function run(skillId: string) {
+    if (running) return
+    setRunning(skillId)
+    setResults((r) => ({ ...r, [skillId]: { ok: false, message: 'running…', ts: new Date().toLocaleTimeString() } }))
+
+    const paramKey = skillParamKey(skillId)
+    const inputs: Record<string, unknown> = {}
+    if (paramKey) {
+      for (const field of SKILL_PARAMS[paramKey]) {
+        const raw = params[skillId]?.[field.key] ?? ''
+        const num = parseFloat(raw)
+        inputs[field.key] = isNaN(num) ? 0 : num
+      }
+    }
+
+    sendActionGoal(url, skillId, (ok, message) => {
+      setResults((r) => ({ ...r, [skillId]: { ok, message, ts: new Date().toLocaleTimeString() } }))
+      setRunning(null)
+    }, inputs)
+  }
+
+  const inputCls = 'w-14 bg-background border border-border px-1 py-0.5 text-[10px] font-mono focus:outline-none focus:border-term-cyan'
+
+  return (
+    <div className="tui-panel bg-card flex flex-col col-span-2">
+      <PanelHeader title="SKILLS" right={skills.length ? `${skills.length} available` : 'loading…'} />
+      <div className="flex flex-col divide-y text-xs max-h-72 overflow-y-auto">
+        {skills.length === 0 && (
+          <div className="px-3 py-3 text-muted-foreground">no skills received</div>
+        )}
+        {skills.map((sk) => {
+          const id = sk.id ?? sk.skill_type ?? '?'
+          const name = sk.display_name ?? sk.name ?? id
+          const res = results[id]
+          const isRunning = running === id
+          const paramKey = skillParamKey(id)
+          const fields = paramKey ? SKILL_PARAMS[paramKey] : null
+
+          return (
+            <div key={id} className="px-3 py-1.5 space-y-1">
+              <div className="flex items-center gap-2">
+                <div className="flex-1 min-w-0">
+                  <div className="text-foreground truncate">{name}</div>
+                  <div className="text-muted-foreground text-[10px] truncate">{id}</div>
+                </div>
+                {fields && (
+                  <div className="flex items-center gap-1 shrink-0">
+                    {fields.map(f => (
+                      <div key={f.key} className="flex flex-col items-center gap-0.5">
+                        <span className="text-[9px] text-muted-foreground">{f.label}</span>
+                        <input
+                          className={inputCls}
+                          placeholder={f.placeholder}
+                          value={params[id]?.[f.key] ?? ''}
+                          onChange={e => setParam(id, f.key, e.target.value)}
+                          onKeyDown={e => e.key === 'Enter' && run(id)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <button
+                  onClick={() => run(id)}
+                  disabled={!!running}
+                  className="shrink-0 text-[10px] px-2 py-0.5 border border-term-green text-term-green bg-transparent hover:bg-term-green/10 disabled:opacity-40 disabled:cursor-not-allowed font-mono"
+                >
+                  {isRunning ? '…' : '▶ RUN'}
+                </button>
+              </div>
+              {res && (
+                <div className={`text-[10px] ${res.message === 'running…' ? 'text-term-cyan' : res.ok ? 'text-term-green' : 'text-term-red'}`}>
+                  {res.ts} — {res.message}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function GotoPanel({ url }: { url: string }) {
+  const [x, setX] = useState('')
+  const [y, setY] = useState('')
+  const [theta, setTheta] = useState('0')
+  const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [running, setRunning] = useState(false)
+
+  function send() {
+    const px = parseFloat(x)
+    const py = parseFloat(y)
+    const pt = parseFloat(theta)
+    if (isNaN(px) || isNaN(py)) { setStatus({ ok: false, msg: 'invalid x or y' }); return }
+    setRunning(true)
+    setStatus({ ok: true, msg: `sending → (${px}, ${py}, θ=${isNaN(pt) ? 0 : pt})…` })
+    sendActionGoal(url, 'innate-os/goto_coordinates', (ok, msg) => {
+      setStatus({ ok, msg: msg || (ok ? 'done' : 'failed') })
+      setRunning(false)
+    }, { x: px, y: py, theta: isNaN(pt) ? 0 : pt })
+  }
+
+  const inputCls = 'w-full bg-background border border-border px-2 py-1 text-xs font-mono focus:outline-none focus:border-term-cyan'
+
+  return (
+    <div className="tui-panel bg-card">
+      <PanelHeader title="GO TO COORDINATES" />
+      <div className="p-2 space-y-2 text-xs">
+        <div className="grid grid-cols-3 gap-1.5">
+          <div>
+            <div className="text-muted-foreground mb-0.5">X (m)</div>
+            <input className={inputCls} placeholder="0.0" value={x} onChange={e => setX(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} />
+          </div>
+          <div>
+            <div className="text-muted-foreground mb-0.5">Y (m)</div>
+            <input className={inputCls} placeholder="0.0" value={y} onChange={e => setY(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} />
+          </div>
+          <div>
+            <div className="text-muted-foreground mb-0.5">θ (rad)</div>
+            <input className={inputCls} placeholder="0.0" value={theta} onChange={e => setTheta(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} />
+          </div>
+        </div>
+        <button
+          onClick={send}
+          disabled={running}
+          className="w-full py-1 border border-term-green text-term-green bg-transparent hover:bg-term-green/10 disabled:opacity-40 disabled:cursor-not-allowed font-mono text-xs"
+        >
+          {running ? 'NAVIGATING…' : '▶ GO'}
+        </button>
+        {status && (
+          <div className={`font-mono truncate ${status.ok ? 'text-term-green' : 'text-term-red'}`}>
+            {status.msg}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SkillUpdatePanel({ url }: { url: string }) {
+  const [text, setText] = useState('')
+
+  function send() {
+    if (!text.trim()) return
+    publishRosbridge(url, '/brain/skill_status_update', 'std_msgs/msg/String', { data: text.trim() })
+    setText('')
+  }
+
+  return (
+    <div className="tui-panel bg-card">
+      <PanelHeader title="SKILL UPDATE" />
+      <div className="p-2 space-y-2 text-xs">
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && send()}
+          placeholder="status update..."
+          className="w-full bg-background border border-border px-2 py-1 text-xs font-mono focus:outline-none focus:border-term-cyan"
+        />
+        <button
+          onClick={send}
+          className="w-full py-1 border border-term-green text-term-green bg-transparent hover:bg-term-green/10 font-mono text-xs"
+        >
+          ▶ PUBLISH
+        </button>
       </div>
     </div>
   )
@@ -1600,6 +1805,15 @@ function AgentPage() {
           <DrivePanel url={url} />
           <SkillStatusPanel url={url} />
           <TTSPanel url={url} />
+          <SkillsPanel url={url} />
+        </div>
+      )}
+
+      {/* orchestrator controls */}
+      {url && (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+          <GotoPanel url={url} />
+          <SkillUpdatePanel url={url} />
         </div>
       )}
 
