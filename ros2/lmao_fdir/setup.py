@@ -20,6 +20,7 @@ setup(
     entry_points={
         "console_scripts": [
             "hello_node = lmao_fdir.hello_node:main",
+            "fdir_node = lmao_fdir.fdir_node:main",
         ],
     },
 )
