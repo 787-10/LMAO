@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoute } from '@tanstack/react-router'
 import { rootRoute } from './__root'
 import {
@@ -39,11 +39,11 @@ function formatNum(n: unknown, decimals = 3): string {
   return '--'
 }
 
-function PanelHeader({ title, right }: { title: string; right?: string }) {
+function PanelHeader({ title, right, rightEl }: { title: string; right?: string; rightEl?: React.ReactNode }) {
   return (
     <div className="border-b px-2 py-1 text-xs text-muted-foreground flex items-center justify-between">
       <span><span className="text-border mr-1">&#9552;</span>{title}<span className="text-border ml-1">&#9552;</span></span>
-      {right && <span>{right}<span className="text-border ml-1">&#9552;</span></span>}
+      {rightEl ?? (right && <span>{right}<span className="text-border ml-1">&#9552;</span></span>)}
     </div>
   )
 }
@@ -510,6 +510,121 @@ interface AvailableSkillsMsg { skills: SkillMsg[] }
 
 interface SkillResult { ok: boolean; message: string; ts: string }
 
+type AlertKind = 'imu' | 'lidar' | 'critical'
+interface CriticalAlert {
+  id: string
+  kind: AlertKind
+  source: string
+  sourceLabel: string
+  message: string
+  ts: string
+}
+
+const CRITICAL_PATTERNS: { kind: AlertKind; re: RegExp }[] = [
+  { kind: 'imu', re: /\bimu\b/i },
+  { kind: 'lidar', re: /\b(lidar|laser[\s_-]?scan|scan)\b/i },
+  { kind: 'critical', re: /\b(critical|fatal|hardware[\s_-]?fail|sensor[\s_-]?fail|emergenc)/i },
+]
+
+function detectCriticalKind(message: string, ok: boolean): AlertKind | null {
+  if (ok) return null
+  for (const p of CRITICAL_PATTERNS) {
+    if (p.re.test(message)) return p.kind
+  }
+  return null
+}
+
+// -- stream health monitor --
+// Watches IMU + LIDAR topics directly; raises alerts on staleness or invalid data.
+// Alerts auto-deduplicate: once fired for a stream, don't re-fire until the stream recovers.
+
+const IMU_STALE_MS = 3000
+const LIDAR_STALE_MS = 3000
+const STREAM_CHECK_INTERVAL_MS = 1000
+
+function useStreamHealthAlerts(
+  url: string,
+  onAlert: (a: Omit<CriticalAlert, 'id' | 'ts'>) => void,
+) {
+  const imu = useRosbridgeTopic<{ data?: string }>(url, '/robot/imu_odom', 'std_msgs/msg/String', 0)
+  const scan = useRosbridgeTopic<LaserScanMsg>(url, '/scan', 'sensor_msgs/msg/LaserScan', 500)
+
+  const imuLast = useRef(0)
+  const scanLast = useRef(0)
+  const imuSeen = useRef(false)
+  const scanSeen = useRef(false)
+  const imuAlerted = useRef(false)
+  const scanAlerted = useRef(false)
+
+  useEffect(() => {
+    const raw = imu.data?.data
+    if (raw === undefined) return
+    let valid = false
+    let detail = ''
+    try {
+      const p = JSON.parse(raw)
+      const fields = ['xacc', 'yacc', 'zacc', 'pitch', 'roll', 'yaw']
+      const bad = fields.filter(f => typeof p[f] !== 'number' || !isFinite(p[f]))
+      if (bad.length === 0) valid = true
+      else detail = `invalid fields: ${bad.join(',')}`
+    } catch (e) {
+      detail = `parse failure: ${(e as Error).message}`
+    }
+    if (valid) {
+      imuLast.current = Date.now()
+      imuSeen.current = true
+      imuAlerted.current = false
+    } else if (!imuAlerted.current) {
+      imuAlerted.current = true
+      onAlert({ kind: 'imu', source: '/robot/imu_odom', sourceLabel: 'IMU stream', message: `IMU data invalid (${detail})` })
+    }
+  }, [imu.data, onAlert])
+
+  useEffect(() => {
+    const d = scan.data
+    if (!d) return
+    const ranges = d.ranges
+    const hasValid = Array.isArray(ranges) && ranges.length > 0 && ranges.some(r => isFinite(r) && r >= d.range_min && r <= d.range_max)
+    if (hasValid) {
+      scanLast.current = Date.now()
+      scanSeen.current = true
+      scanAlerted.current = false
+    } else if (!scanAlerted.current) {
+      scanAlerted.current = true
+      const n = ranges?.length ?? 0
+      onAlert({ kind: 'lidar', source: '/scan', sourceLabel: 'LIDAR scan', message: `LIDAR scan invalid (${n} ranges, none in [${d.range_min},${d.range_max}])` })
+    }
+  }, [scan.data, onAlert])
+
+  // reset all health state when url changes
+  useEffect(() => {
+    imuLast.current = 0
+    scanLast.current = 0
+    imuSeen.current = false
+    scanSeen.current = false
+    imuAlerted.current = false
+    scanAlerted.current = false
+  }, [url])
+
+  useEffect(() => {
+    if (!url) return
+    const i = setInterval(() => {
+      const now = Date.now()
+      if (imuSeen.current && !imuAlerted.current && now - imuLast.current > IMU_STALE_MS) {
+        imuAlerted.current = true
+        const age = ((now - imuLast.current) / 1000).toFixed(1)
+        onAlert({ kind: 'imu', source: '/robot/imu_odom', sourceLabel: 'IMU stream', message: `IMU stream stale (no message for ${age}s)` })
+      }
+      if (scanSeen.current && !scanAlerted.current && now - scanLast.current > LIDAR_STALE_MS) {
+        scanAlerted.current = true
+        const age = ((now - scanLast.current) / 1000).toFixed(1)
+        onAlert({ kind: 'lidar', source: '/scan', sourceLabel: 'LIDAR scan', message: `LIDAR scan stream stale (no message for ${age}s)` })
+      }
+    }, STREAM_CHECK_INTERVAL_MS)
+    return () => clearInterval(i)
+  }, [url, onAlert])
+}
+
 // Skills that require inline parameter inputs before running
 const SKILL_PARAMS: Record<string, { label: string; key: string; placeholder: string }[]> = {
   'navigate_to_position': [
@@ -526,7 +641,7 @@ function skillParamKey(id: string): string | null {
   return null
 }
 
-function SkillsPanel({ url }: { url: string }) {
+function SkillsPanel({ url, onAlert }: { url: string; onAlert?: (a: Omit<CriticalAlert, 'id' | 'ts'>) => void }) {
   const { data } = useRosbridgeTopic<AvailableSkillsMsg>(
     url, '/brain/available_skills', 'brain_messages/msg/AvailableSkills',
   )
@@ -537,7 +652,6 @@ function SkillsPanel({ url }: { url: string }) {
   const skills = (data?.skills ?? []).sort((a, b) =>
     (a.name ?? '').toLowerCase().localeCompare((b.name ?? '').toLowerCase()),
   )
-  console.log(skills)
 
   function setParam(skillId: string, key: string, value: string) {
     setParams(p => ({ ...p, [skillId]: { ...p[skillId], [key]: value } }))
@@ -559,7 +673,19 @@ function SkillsPanel({ url }: { url: string }) {
     }
 
     sendActionGoal(url, skillId, (ok, message) => {
-      setResults((r) => ({ ...r, [skillId]: { ok, message, ts: new Date().toLocaleTimeString() } }))
+      const kind = detectCriticalKind(message, ok)
+      if (kind && onAlert) {
+        const sk = skills.find(s => (s.id ?? s.skill_type) === skillId)
+        onAlert({
+          kind,
+          source: skillId,
+          sourceLabel: `skill: ${sk?.display_name ?? sk?.name ?? skillId}`,
+          message,
+        })
+        setResults((r) => ({ ...r, [skillId]: { ok, message: `${kind.toUpperCase()} fault — see alerts`, ts: new Date().toLocaleTimeString() } }))
+      } else {
+        setResults((r) => ({ ...r, [skillId]: { ok, message, ts: new Date().toLocaleTimeString() } }))
+      }
       setRunning(null)
     }, inputs)
   }
@@ -567,7 +693,7 @@ function SkillsPanel({ url }: { url: string }) {
   const inputCls = 'w-14 bg-background border border-border px-1 py-0.5 text-[10px] font-mono focus:outline-none focus:border-term-cyan'
 
   return (
-    <div className="tui-panel bg-card flex flex-col col-span-full sm:col-span-2 md:col-span-3 lg:col-span-2">
+    <div className="tui-panel bg-card flex flex-col">
       <PanelHeader title="SKILLS" right={skills.length ? `${skills.length} available` : 'loading…'} />
       <div className="flex flex-col divide-y text-xs max-h-128 overflow-y-auto">
         {skills.length === 0 && (
@@ -582,7 +708,7 @@ function SkillsPanel({ url }: { url: string }) {
           const fields = paramKey ? SKILL_PARAMS[paramKey] : null
 
           return (
-            <div key={id} className="px-3 py-1.5 space-y-1">
+            <div key={id} className="px-3 py-1.5 space-y-1 hover:bg-accent/50">
               <div className="flex items-center gap-2">
                 <div className="flex-1 min-w-0">
                   <div className="text-foreground truncate">{name}</div>
@@ -617,6 +743,56 @@ function SkillsPanel({ url }: { url: string }) {
                   {res.ts} — {res.message}
                 </div>
               )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+
+const ALERT_STYLES: Record<AlertKind, { label: string; cls: string }> = {
+  imu: { label: 'IMU FAULT', cls: 'border-term-red text-term-red' },
+  lidar: { label: 'LIDAR FAULT', cls: 'border-term-red text-term-red' },
+  critical: { label: 'CRITICAL', cls: 'border-term-red text-term-red' },
+}
+
+function AlertsPanel({ alerts, onDismiss, onClear }: {
+  alerts: CriticalAlert[]
+  onDismiss: (id: string) => void
+  onClear: () => void
+}) {
+  if (alerts.length === 0) return null
+  return (
+    <div className="tui-panel bg-card border-term-red">
+      <div className="border-b border-term-red/60 px-2 py-1 text-xs flex items-center justify-between">
+        <span className="text-term-red font-bold">
+          <span className="text-border mr-1">&#9552;</span>
+          ALERTS
+          <span className="text-border ml-1">&#9552;</span>
+          <span className="ml-2 status-live">●</span>
+          <span className="ml-1">{alerts.length} active</span>
+        </span>
+        <button onClick={onClear} className="text-[10px] text-muted-foreground hover:text-foreground">clear all</button>
+      </div>
+      <div className="divide-y text-xs max-h-40 overflow-y-auto">
+        {alerts.map(a => {
+          const style = ALERT_STYLES[a.kind]
+          return (
+            <div key={a.id} className="flex items-start gap-2 px-2 py-1.5">
+              <span className="text-muted-foreground shrink-0">{a.ts}</span>
+              <span className={`shrink-0 border px-1 font-bold ${style.cls}`}>{style.label}</span>
+              <div className="flex-1 min-w-0">
+                <div className="text-foreground break-words">{a.message}</div>
+                <div className="text-[10px] text-muted-foreground truncate">{a.sourceLabel} ({a.source})</div>
+              </div>
+              <button
+                onClick={() => onDismiss(a.id)}
+                className="shrink-0 text-[10px] text-muted-foreground hover:text-term-red"
+              >
+                dismiss
+              </button>
             </div>
           )
         })}
@@ -1084,7 +1260,7 @@ interface LaserScanMsg {
   ranges: number[]
 }
 
-function LidarPanel({ url, paused }: { url: string; paused: boolean }) {
+function LidarPanel({ url, paused, onTogglePause }: { url: string; paused: boolean; onTogglePause?: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [viewRange, setViewRange] = useState<number>(2)
   const { data } = useRosbridgeTopic<LaserScanMsg>(url, paused ? '' : '/scan', 'sensor_msgs/msg/LaserScan', 500)
@@ -1095,8 +1271,12 @@ function LidarPanel({ url, paused }: { url: string; paused: boolean }) {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    const W = canvas.width
-    const H = canvas.height
+    const LOGICAL = 300
+    const k = canvas.width / LOGICAL
+    ctx.setTransform(k, 0, 0, k, 0, 0)
+
+    const W = LOGICAL
+    const H = LOGICAL
     const cx = W / 2
     const cy = H / 2
 
@@ -1183,10 +1363,10 @@ function LidarPanel({ url, paused }: { url: string; paused: boolean }) {
   }, [data, viewRange])
 
   return (
-    <div className="tui-panel bg-card w-[310px] shrink-0">
+    <div className="tui-panel bg-card flex flex-col w-full">
       <PanelHeader title="LIDAR" right={`${viewRange}m /scan`} />
-      <div className="p-1">
-        <canvas ref={canvasRef} width={298} height={298} className="w-full" style={{ aspectRatio: '1' }} />
+      <div className="p-1 flex-1">
+        <canvas ref={canvasRef} width={900} height={900} className="w-full" style={{ aspectRatio: '1' }} />
       </div>
       <div className="border-t px-2 py-1 flex gap-1 text-[10px]">
         {[2, 4, 8].map((r) => (
@@ -1198,6 +1378,14 @@ function LidarPanel({ url, paused }: { url: string; paused: boolean }) {
             {r}m
           </button>
         ))}
+        {onTogglePause && (
+          <button
+            onClick={onTogglePause}
+            className={`ml-auto px-2 py-0.5 ${paused ? 'bg-term-yellow/10 text-term-yellow' : 'bg-card text-muted-foreground hover:text-foreground'}`}
+          >
+            {paused ? '> resume' : '|| pause'}
+          </button>
+        )}
       </div>
     </div>
   )
@@ -1272,10 +1460,13 @@ function LiveLocationTrack({ url }: { url: string }) {
     const wy = -(svgPt.y - 50) / scale   // flip Y back
     setWaypoint({ x: wx, y: wy })
     setNavStatus('sending…')
+    const currentYaw = rawOri
+      ? Math.atan2(2 * (rawOri.w * rawOri.z + rawOri.x * rawOri.y), 1 - 2 * (rawOri.y ** 2 + rawOri.z ** 2))
+      : 0
     sendActionGoal(url, 'innate-os/navigate_to_position', (ok, message) => {
       setNavStatus(ok ? 'arrived' : `failed: ${message || 'error'}`)
       setTimeout(() => setNavStatus(null), 4000)
-    }, { x: wx, y: wy, theta: 0 })
+    }, { x: wx, y: wy, theta: currentYaw, local_frame: false })
   }
 
   let yaw = 0
@@ -1384,9 +1575,10 @@ const LOG_OCC = 0.4
 const LOG_FREE = -0.12
 const LOG_CLAMP = 6
 
+// North-up map convention: world +x (forward) -> screen up, world +y (left) -> screen left.
 function worldToGrid(wx: number, wy: number, originX: number, originY: number): [number, number] {
-  const gx = Math.floor((wx - originX) / OCC_RES + OCC_SIZE / 2)
-  const gy = Math.floor((wy - originY) / OCC_RES + OCC_SIZE / 2)
+  const gx = Math.floor(OCC_SIZE / 2 - (wy - originY) / OCC_RES)
+  const gy = Math.floor(OCC_SIZE / 2 - (wx - originX) / OCC_RES)
   return [gx, gy]
 }
 
@@ -1396,12 +1588,20 @@ function inGrid(gx: number, gy: number): boolean {
 
 function LidarOccupancy({ url, paused }: { url: string; paused: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const offscreenRef = useRef<HTMLCanvasElement | null>(null)
   const gridRef = useRef<Float32Array>(new Float32Array(OCC_SIZE * OCC_SIZE))
   const originRef = useRef<{ x: number; y: number } | null>(null)
   const poseRef = useRef({ x: 0, y: 0, yaw: 0 })
   const frameRef = useRef(0)
   const pausedRef = useRef(false)
   pausedRef.current = paused
+
+  if (!offscreenRef.current) {
+    const tmp = document.createElement('canvas')
+    tmp.width = OCC_SIZE
+    tmp.height = OCC_SIZE
+    offscreenRef.current = tmp
+  }
 
   const { data: scanData } = useRosbridgeTopic<LaserScanMsg>(url, paused ? '' : '/scan', 'sensor_msgs/msg/LaserScan', 500)
   const { data: odomData } = useRosbridgeTopic<{
@@ -1466,14 +1666,18 @@ function LidarOccupancy({ url, paused }: { url: string; paused: boolean }) {
 
     frameRef.current++
 
-    // render -- 1:1 pixel mapping (OCC_SIZE === canvas size)
+    // render: grid to offscreen at OCC_SIZE, then scaled to main canvas; overlays in OCC_SIZE logical coords
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
+    const offscreen = offscreenRef.current
+    if (!offscreen) return
+    const tmpCtx = offscreen.getContext('2d')
+    if (!tmpCtx) return
 
     const S = OCC_SIZE
-    const imgData = ctx.createImageData(S, S)
+    const imgData = tmpCtx.createImageData(S, S)
 
     for (let i = 0; i < grid.length; i++) {
       const v = grid[i]
@@ -1492,24 +1696,30 @@ function LidarOccupancy({ url, paused }: { url: string; paused: boolean }) {
       imgData.data[i * 4 + 2] = cb
       imgData.data[i * 4 + 3] = 255
     }
-    ctx.putImageData(imgData, 0, 0)
+    tmpCtx.putImageData(imgData, 0, 0)
+
+    // scale to main canvas; overlays draw in OCC_SIZE logical coords
+    const k = canvas.width / OCC_SIZE
+    ctx.setTransform(k, 0, 0, k, 0, 0)
+    ctx.imageSmoothingEnabled = false
+    ctx.drawImage(offscreen, 0, 0)
 
     // robot position on map
     const [botGx, botGy] = worldToGrid(rx, ry, origin.x, origin.y)
 
-    // heading indicator
+    // heading indicator (north-up: +x forward = canvas up, +y left = canvas left)
     ctx.strokeStyle = 'rgba(95,175,95,0.6)'
     ctx.lineWidth = 1.5
     ctx.beginPath()
     ctx.moveTo(botGx, botGy)
-    ctx.lineTo(botGx + Math.cos(-yaw + Math.PI / 2) * 14, botGy - Math.sin(-yaw + Math.PI / 2) * 14)
+    ctx.lineTo(botGx - Math.sin(yaw) * 14, botGy - Math.cos(yaw) * 14)
     ctx.stroke()
 
     // robot triangle
     ctx.fillStyle = '#5f87af'
     ctx.save()
     ctx.translate(botGx, botGy)
-    ctx.rotate(-yaw + Math.PI / 2)
+    ctx.rotate(-yaw)
     ctx.beginPath()
     ctx.moveTo(0, -5)
     ctx.lineTo(-3, 4)
@@ -1520,34 +1730,14 @@ function LidarOccupancy({ url, paused }: { url: string; paused: boolean }) {
   }, [scanData])
 
   return (
-    <div className="tui-panel bg-card w-[310px] shrink-0">
+    <div className="tui-panel bg-card flex flex-col w-full">
       <PanelHeader title="LIDAR MAP" right={`${frameRef.current}`} />
-      <div className="p-1">
-        <canvas ref={canvasRef} width={OCC_SIZE} height={OCC_SIZE} className="w-full" style={{ aspectRatio: '1', imageRendering: 'pixelated' }} />
+      <div className="p-1 flex-1">
+        <canvas ref={canvasRef} width={OCC_SIZE * 3} height={OCC_SIZE * 3} className="w-full" style={{ aspectRatio: '1' }} />
       </div>
     </div>
   )
 }
-
-// -- lidar group with shared pause --
-
-function LidarGroup({ url }: { url: string }) {
-  const [paused, setPaused] = useState(false)
-  return (
-    <div className="flex items-stretch gap-0">
-      <LidarPanel url={url} paused={paused} />
-      <button
-        onClick={() => setPaused((p) => !p)}
-        className={`border-y px-2 text-xs flex items-center ${paused ? 'tui-hatch-dense bg-term-yellow/10 text-term-yellow' : 'tui-hatch-subtle bg-card text-muted-foreground hover:text-foreground'
-          }`}
-      >
-        {paused ? '>' : '||'}
-      </button>
-      <LidarOccupancy url={url} paused={paused} />
-    </div>
-  )
-}
-
 
 function SystemStatsBody({ url }: { url: string }) {
   const { data: sysData } = useRosbridgeTopic<{ data?: string }>(url, '/robot/sys_stats', 'std_msgs/msg/String', 2000)
@@ -1673,7 +1863,7 @@ function ImuAccelPanel({ url }: { url: string }) {
 
   return (
     <div className="tui-panel bg-card flex flex-col">
-      <PanelHeader title="IMU ACCEL" right={parsed ? 'live pixhawk' : 'run imu_odom_pub.py'} />
+      <PanelHeader title="IMU ACCEL" right={parsed ? 'live pixhawk' : 'run imu_odom_pub2.py'} />
       <div className="p-2 space-y-2 text-xs">
         {parsed ? <>
           <AccelBar val={xacc} color="#af5f5f" label="X (fwd)" />
@@ -1795,6 +1985,106 @@ function DepthCloudPanel({ url }: { url: string }) {
   )
 }
 
+// -- status bar --
+
+function BatteryIcon({ pct, color }: { pct: number | null; color: string }) {
+  const fill = pct ?? 0
+  return (
+    <svg width="22" height="12" viewBox="0 0 22 12" className="shrink-0">
+      <rect x="0.5" y="0.5" width="19" height="11" fill="none" stroke="currentColor" strokeWidth="1" className="text-muted-foreground" />
+      <rect x="20" y="3" width="2" height="6" fill="currentColor" className="text-muted-foreground" />
+      <rect x="2" y="2" width={Math.max(0, Math.min(16, (fill / 100) * 16))} height="8" fill={color} />
+    </svg>
+  )
+}
+
+function StatusBar({
+  agent,
+  url,
+  wsStatus,
+}: {
+  agent: { id: string; name: string; status: string }
+  url?: string
+  wsStatus: 'connecting' | 'connected' | 'disconnected'
+}) {
+  const { data: sysData } = useRosbridgeTopic<{ data?: string }>(url, '/robot/sys_stats', 'std_msgs/msg/String', 2000)
+  const { data: batData } = useRosbridgeTopic<{
+    voltage?: number
+    percentage?: number
+    current?: number
+    temperature?: number
+  }>(url, '/battery_state', 'sensor_msgs/msg/BatteryState', 1000)
+
+  const stats = (() => {
+    try { return sysData?.data ? JSON.parse(sysData.data) : null } catch { return null }
+  })()
+
+  const cpuPct: number | null = stats?.gpu?.cpu_avg_pct ?? null
+  const gpuPct: number | null = stats?.gpu?.gpu_pct ?? null
+  const ramPct: number | null = stats?.gpu?.ram_pct ?? stats?.memory?.used_pct ?? null
+  const hottest: { zone: string; temp_c: number } | null = stats?.thermal?.hottest ?? null
+
+  const batPct = batData?.percentage != null ? Math.round(batData.percentage * 100) : null
+  const voltage = batData?.voltage ?? null
+  const current = batData?.current ?? null
+
+  const batColor = batPct == null ? '#555'
+    : batPct > 60 ? '#5faf5f'
+      : batPct > 30 ? '#afaf5f'
+        : '#af5f5f'
+  const batTextColor = batPct == null ? 'text-muted-foreground'
+    : batPct > 60 ? 'text-term-green'
+      : batPct > 30 ? 'text-term-yellow'
+        : 'text-term-red'
+
+  const statusColor = agent.status === 'online' ? 'text-term-green' : agent.status === 'idle' ? 'text-term-yellow' : 'text-term-red'
+  const wsColor = wsStatus === 'connected' ? 'text-term-green' : wsStatus === 'disconnected' ? 'text-term-red' : 'text-term-yellow'
+
+  const pctColor = (v: number | null, danger = 80) =>
+    v == null ? 'text-muted-foreground' : v > danger ? 'text-term-red' : v > danger * 0.65 ? 'text-term-yellow' : 'text-term-green'
+
+  return (
+    <div className="tui-panel bg-card px-3 flex items-center gap-4 text-xs h-12 shrink-0 overflow-x-auto">
+      <div className="flex items-center gap-2 shrink-0">
+        <span className={`${statusColor} ${agent.status === 'online' ? 'status-live' : ''}`}>●</span>
+        <span className="font-bold text-foreground">{agent.name}</span>
+        <span className="text-muted-foreground">{agent.id}</span>
+        <span className={statusColor}>{agent.status}</span>
+      </div>
+
+      <div className="w-px h-5 bg-border shrink-0" />
+
+      <div className="flex items-center gap-2 shrink-0 w-96">
+        <span className={`${wsColor} ${wsStatus === 'connected' ? 'status-live' : ''}`}>●</span>
+        <span className={wsColor}>{wsStatus}</span>
+        {url && <span className="text-muted-foreground truncate max-w-[240px]">{url}</span>}
+      </div>
+
+      {url && <>
+        <div className="w-px h-5 bg-border shrink-0" />
+
+        <div className="flex items-center gap-2 shrink-0">
+          <BatteryIcon pct={batPct} color={batColor} />
+          <span className={batTextColor}>{batPct != null ? `${batPct}%` : '--'}</span>
+          {voltage != null && <span className="text-muted-foreground">{voltage.toFixed(1)}<span className="opacity-60">V</span></span>}
+          {current != null && <span className="text-muted-foreground">{current.toFixed(1)}<span className="opacity-60">A</span></span>}
+        </div>
+
+        <div className="w-px h-5 bg-border shrink-0" />
+
+        <div className="flex items-center gap-3 shrink-0">
+          <span className="text-muted-foreground">CPU <span className={pctColor(cpuPct)}>{cpuPct != null ? `${cpuPct}%` : '--'}</span></span>
+          <span className="text-muted-foreground">GPU <span className={pctColor(gpuPct)}>{gpuPct != null ? `${gpuPct}%` : '--'}</span></span>
+          <span className="text-muted-foreground">RAM <span className={pctColor(ramPct, 85)}>{ramPct != null ? `${ramPct}%` : '--'}</span></span>
+          {hottest && (
+            <span className="text-muted-foreground">T <span className={hottest.temp_c > 70 ? 'text-term-red' : hottest.temp_c > 50 ? 'text-term-yellow' : 'text-foreground'}>{hottest.temp_c}{'\u00b0'}C</span></span>
+          )}
+        </div>
+      </>}
+    </div>
+  )
+}
+
 // -- main page --
 
 function AgentPage() {
@@ -1807,28 +2097,33 @@ function AgentPage() {
 
   const url = agent.rosbridgeUrl
   const wsStatus = useRosbridgeStatus(url)
-  const statusColor = agent.status === 'online' ? 'text-term-green' : agent.status === 'idle' ? 'text-term-yellow' : 'text-term-red'
-  const wsColor = wsStatus === 'connected' ? 'text-term-green' : wsStatus === 'disconnected' ? 'text-term-red' : 'text-term-yellow'
+
+  const [alerts, setAlerts] = useState<CriticalAlert[]>([])
+  const pushAlert = useCallback((a: Omit<CriticalAlert, 'id' | 'ts'>) => {
+    setAlerts(prev => [
+      { ...a, id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: new Date().toLocaleTimeString() },
+      ...prev,
+    ].slice(0, 20))
+  }, [])
+  const dismissAlert = (id: string) => setAlerts(prev => prev.filter(a => a.id !== id))
+  const clearAlerts = () => setAlerts([])
+
+  useStreamHealthAlerts(url ?? '', pushAlert)
+
+  const [lidarPaused, setLidarPaused] = useState(false)
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <h1 className="text-sm font-bold">~/agents/{agent.id}</h1>
-        {url && (
-          <div className="flex items-center gap-2 text-xs">
-            <span className={`${wsColor} ${wsStatus === 'connected' ? 'status-live' : ''}`}>●</span>
-            <span className={wsColor}>{wsStatus}</span>
-            <span className="text-muted-foreground">{url}</span>
-          </div>
-        )}
-      </div>
+      <StatusBar agent={agent} url={url} wsStatus={wsStatus} />
 
-      {/* cameras + info */}
+      <AlertsPanel alerts={alerts} onDismiss={dismissAlert} onClear={clearAlerts} />
+
+      {/* cameras + lidars: flow-card (100%/50%/25%); telemetry flex-1; skills full width */}
       <div className="flex flex-wrap gap-3">
-        <div className="flex gap-0 shrink-0">
-          <div className="tui-panel bg-card flex flex-col w-[400px]">
+        <div className="flow-card flex gap-0">
+          <div className="tui-panel bg-card flex flex-col flex-1 min-w-0">
             <PanelHeader title="MAIN CAMERA" right="/main_camera/left" />
-            <div className="aspect-video bg-black overflow-hidden">
+            <div className="aspect-square bg-black overflow-hidden">
               {url ? (
                 <ImageFeed url={url} topic="/mars/main_camera/left/image_raw/compressed" label="MAIN" depthTopic="/mars/main_camera/depth/image_rect_raw" />
               ) : (
@@ -1839,9 +2134,9 @@ function AgentPage() {
           {url && <HeadPositionPanel url={url} />}
         </div>
 
-        <div className="tui-panel bg-card flex flex-col w-[400px] shrink-0">
+        <div className="flow-card tui-panel bg-card flex flex-col">
           <PanelHeader title="ARM CAMERA" right="/arm/image_raw" />
-          <div className="aspect-video bg-black overflow-hidden">
+          <div className="aspect-square bg-black overflow-hidden">
             {url ? (
               <ImageFeed url={url} topic="/mars/arm/image_raw/compressed" label="ARM" />
             ) : (
@@ -1850,40 +2145,23 @@ function AgentPage() {
           </div>
         </div>
 
-        <div className="tui-panel bg-card flex flex-col flex-1 min-w-[240px]">
-          <PanelHeader title="AGENT INFO" />
-          <div className="p-3 text-xs space-y-2 flex-1">
-            <TelemetryRow label="name" value={agent.name} />
-            <TelemetryRow label="id" value={agent.id} />
-            <TelemetryRow label="status" value={agent.status} color={statusColor} />
-            {url && <TelemetryRow label="ws" value={url} color="text-term-cyan" />}
-            {url && (
-              <>
-                <div className="border-t mt-2 pt-2" />
-                <SystemStatsBody url={url} />
-              </>
-            )}
-          </div>
-        </div>
-
-        {url && <LidarGroup url={url} />}
-      </div>
-
-      {/* telemetry grid: visualizations + readouts */}
-      {url && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 auto-rows-min">
-          <div className="tui-panel bg-card flex flex-col">
-            <PanelHeader title="ENCODER ODOM" right="map frame /amcl_pose" />
-            <div className="p-1 aspect-square">
-              <LiveLocationTrack url={url} />
+        {url && (
+          <>
+            <div className="flow-card flex"><LidarPanel url={url} paused={lidarPaused} onTogglePause={() => setLidarPaused(p => !p)} /></div>
+            <div className="flow-card flex"><LidarOccupancy url={url} paused={lidarPaused} /></div>
+            <div className="tui-panel bg-card flex flex-col flex-1 basis-[240px] min-w-[240px]">
+              <PanelHeader title="ENCODER ODOM" right="map frame /amcl_pose" />
+              <div className="p-1 aspect-square">
+                <LiveLocationTrack url={url} />
+              </div>
             </div>
-          </div>
-          <ImuAccelPanel url={url} />
-          <DrivePanel url={url} />
-          <DepthCloudPanel url={url} />
-          <SkillsPanel url={url} />
-        </div>
-      )}
+            <div className="flex-1 basis-[240px] min-w-[240px] grid"><ImuAccelPanel url={url} /></div>
+            <div className="flex-1 basis-[240px] min-w-[240px] grid"><DrivePanel url={url} /></div>
+            <div className="flex-1 basis-[240px] min-w-[240px] grid"><DepthCloudPanel url={url} /></div>
+            <div className="w-full grid"><SkillsPanel url={url} onAlert={pushAlert} /></div>
+          </>
+        )}
+      </div>
 
       {/* chat */}
       {url && <ChatPanel url={url} />}
