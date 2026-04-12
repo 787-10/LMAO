@@ -52,17 +52,23 @@ async def event_loop(
             log.info("EVENT  %s", event.describe())
             # Broadcast to all WS clients
             await broadcaster.broadcast(_event_dict(event))
-            # Auto-replan on degradation / comms-loss / task failure
-            if event.type in (
-                EventType.ROBOT_DEGRADED,
-                EventType.COMMS_LOST,
-                EventType.TASK_FAILED,
-            ):
-                try:
+
+            # Route to reasoner based on event type
+            try:
+                if event.type in (
+                    EventType.ROBOT_DEGRADED,
+                    EventType.TASK_FAILED,
+                ):
                     response = await reasoner.handle_health_event(event)
                     print(f"\n[REPLAN] {response}\n")
-                except Exception:
-                    log.exception("Auto-replan failed for event %s", event.type)
+                elif event.type == EventType.COMMS_LOST:
+                    response = await reasoner.handle_comms_lost(event)
+                    print(f"\n[COMMS LOST] {response}\n")
+                elif event.type == EventType.COMMS_RESTORED:
+                    response = await reasoner.handle_comms_restored(event)
+                    print(f"\n[COMMS RESTORED] {response}\n")
+            except Exception:
+                log.exception("Auto-replan failed for event %s", event.type)
 
         # Periodic health snapshot for WS clients (every ~2s)
         health_tick += 1
