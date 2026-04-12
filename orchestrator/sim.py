@@ -84,16 +84,16 @@ class SimConnectionManager:
                 msg: dict) -> None:
         log.info("[SIM] PUB  %s %s → %s", robot_name, topic, _short(msg))
 
-    async def call_service(self, robot_name: str, service: str,
-                           srv_type: str, args: dict | None = None) -> dict:
-        log.info("[SIM] SRV  %s %s(%s)", robot_name, service, _short(args))
-        return {"success": True, "simulated": True}
+    async def run_skill(self, robot_name: str, skill_type: str,
+                        inputs: dict | None = None) -> dict:
+        log.info("[SIM] SKILL %s → %s(%s)", robot_name, skill_type, _short(inputs))
+        return {"success": True, "message": "simulated", "skill": skill_type}
 
     async def send_nav_goal(self, robot_name: str, x: float, y: float,
                             theta: float = 0.0) -> dict:
         log.info("[SIM] NAV  %s → (%.1f, %.1f, %.1f)", robot_name, x, y, theta)
-        return {"success": True, "simulated": True,
-                "target": {"x": x, "y": y, "theta": theta}}
+        return await self.run_skill(robot_name, "innate-os/navigate_to_position",
+                                    {"x": x, "y": y, "theta": theta})
 
     def send_cmd_vel(self, robot_name: str, linear_x: float = 0.0,
                      angular_z: float = 0.0) -> None:

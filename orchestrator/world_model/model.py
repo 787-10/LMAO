@@ -44,10 +44,21 @@ class WorldModel:
             rs = self._robots.get(robot_name)
             if rs is None:
                 return
+            twist = msg.get("twist", {}).get("twist", {})
+            lin = twist.get("linear", {})
+            ang = twist.get("angular", {})
+            rs.velocity = (lin.get("x", 0.0), ang.get("z", 0.0))
+            rs.last_odom_time = time.monotonic()
+
+    async def update_amcl_pose(self, robot_name: str, msg: dict) -> None:
+        """Update position from /amcl_pose (map frame — used by navigation)."""
+        async with self._lock:
+            rs = self._robots.get(robot_name)
+            if rs is None:
+                return
             pose = msg.get("pose", {}).get("pose", {})
             pos = pose.get("position", {})
             orient = pose.get("orientation", {})
-            # Extract yaw from quaternion (z-axis rotation)
             qz = orient.get("z", 0.0)
             qw = orient.get("w", 1.0)
             theta = 2.0 * math.atan2(qz, qw)
@@ -55,11 +66,6 @@ class WorldModel:
             y = pos.get("y", 0.0)
             rs.position = (x, y, theta)
             rs.record_position(x, y, theta)
-            twist = msg.get("twist", {}).get("twist", {})
-            lin = twist.get("linear", {})
-            ang = twist.get("angular", {})
-            rs.velocity = (lin.get("x", 0.0), ang.get("z", 0.0))
-            rs.last_odom_time = time.monotonic()
 
     async def update_battery(self, robot_name: str, msg: dict) -> None:
         async with self._lock:
@@ -67,7 +73,11 @@ class WorldModel:
             if rs is None:
                 return
             rs.battery_voltage = msg.get("voltage")
-            rs.battery_percentage = msg.get("percentage")
+            # MARS reports percentage as 0.0–1.0 fraction; normalise to 0–100
+            raw_pct = msg.get("percentage")
+            if raw_pct is not None and raw_pct <= 1.0:
+                raw_pct = raw_pct * 100.0
+            rs.battery_percentage = raw_pct
             rs.last_battery_time = time.monotonic()
 
     async def update_arm_state(self, robot_name: str, msg: dict) -> None:

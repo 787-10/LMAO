@@ -1,30 +1,204 @@
-"""Multi-robot roslibpy connection lifecycle + asyncio bridge."""
+"""Multi-robot WebSocket connection manager.
+
+Speaks the same rosbridge-like JSON protocol as Innate's rws_server,
+using raw WebSocket (autobahn/twisted) instead of roslibpy — because
+rws_server rejects roslibpy's extra subscribe fields.
+
+Subscribe messages match what the lucas dashboard sends:
+  {"op": "subscribe", "topic": "/scan", "type": "sensor_msgs/msg/LaserScan"}
+
+Publish messages:
+  {"op": "advertise", "topic": "/cmd_vel", "type": "geometry_msgs/msg/Twist"}
+  {"op": "publish", "topic": "/cmd_vel", "msg": {...}}
+"""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
+import threading
 from collections.abc import Callable
 from typing import Any
-
-import roslibpy
 
 from orchestrator.config import RobotConfig
 
 log = logging.getLogger(__name__)
 
 
-class ConnectionManager:
-    """Manages one roslibpy.Ros client per robot.
+class _RobotWS:
+    """Single WebSocket connection to one robot's rws_server."""
 
-    roslibpy runs a twisted reactor on a background thread.  Message
-    callbacks fire there, so we bridge into the asyncio event loop via
-    ``loop.call_soon_threadsafe``.
+    def __init__(self, name: str, host: str, port: int, loop: asyncio.AbstractEventLoop) -> None:
+        self.name = name
+        self.host = host
+        self.port = port
+        self._loop = loop
+        self._ws: Any = None
+        self._connected = False
+        self._listeners: dict[str, list[Callable]] = {}  # topic -> [callbacks]
+        self._action_callbacks: dict[str, Callable] = {}  # msg_id -> callback
+        self._advertised: set[str] = set()
+        self._pending_subs: list[dict] = []
+        self._action_counter = 0
+        self._thread: threading.Thread | None = None
+
+    def connect(self) -> bool:
+        """Connect in a background thread (twisted reactor). Returns success."""
+        ready = threading.Event()
+        success = [False]
+
+        def _run() -> None:
+            from autobahn.twisted.websocket import (
+                WebSocketClientFactory,
+                WebSocketClientProtocol,
+                connectWS,
+            )
+            from twisted.internet import reactor as _reactor
+
+            parent = self
+
+            class Proto(WebSocketClientProtocol):
+                def onOpen(self):
+                    parent._ws = self
+                    parent._connected = True
+                    success[0] = True
+                    log.info("Connected to %s at ws://%s:%d", parent.name, parent.host, parent.port)
+                    # Send any pending subscriptions
+                    for sub in parent._pending_subs:
+                        self.sendMessage(json.dumps(sub).encode("utf-8"))
+                    parent._pending_subs.clear()
+                    ready.set()
+
+                def onMessage(self, payload, isBinary):
+                    if isBinary:
+                        return
+                    try:
+                        raw = payload.decode("utf-8")
+                        # rws sends null-gap arrays like [, and ,, — fix before parsing
+                        raw = re.sub(r"\[,", "[null,", raw)
+                        raw = re.sub(r",(?=[,\]])", ",null", raw)
+                        msg = json.loads(raw)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        return
+
+                    op = msg.get("op")
+                    if op == "publish":
+                        topic = msg.get("topic", "")
+                        data = msg.get("msg", {})
+                        for cb in parent._listeners.get(topic, []):
+                            parent._loop.call_soon_threadsafe(cb, data)
+                    elif op == "action_result":
+                        msg_id = msg.get("id", "")
+                        cb = parent._action_callbacks.pop(msg_id, None)
+                        if cb:
+                            parent._loop.call_soon_threadsafe(cb, msg.get("values", {}))
+
+                def onClose(self, wasClean, code, reason):
+                    parent._connected = False
+                    log.warning("%s WebSocket closed: %s", parent.name, reason)
+                    # Auto-reconnect after 3s
+                    if not _reactor._stopped:
+                        _reactor.callLater(3.0, _do_connect)
+
+            def _do_connect():
+                factory = WebSocketClientFactory(f"ws://{parent.host}:{parent.port}")
+                factory.protocol = Proto
+                factory.setProtocolOptions(openHandshakeTimeout=10)
+                connectWS(factory)
+
+            _do_connect()
+
+            # If not connected within 10s, unblock
+            _reactor.callLater(10.0, lambda: ready.set())
+
+            if not _reactor.running:
+                _reactor.run(installSignalHandlers=False)
+
+        self._thread = threading.Thread(target=_run, daemon=True)
+        self._thread.start()
+        ready.wait(timeout=12)
+        return success[0]
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    def subscribe(self, topic: str, msg_type: str, callback: Callable[[dict], None]) -> None:
+        self._listeners.setdefault(topic, []).append(callback)
+        sub_msg = {"op": "subscribe", "topic": topic, "type": msg_type}
+        if self._ws and self._connected:
+            self._ws.sendMessage(json.dumps(sub_msg).encode("utf-8"))
+        else:
+            self._pending_subs.append(sub_msg)
+
+    def publish(self, topic: str, msg_type: str, msg: dict) -> None:
+        if not self._ws or not self._connected:
+            return
+        # Advertise once
+        if topic not in self._advertised:
+            adv = {"op": "advertise", "topic": topic, "type": msg_type}
+            self._ws.sendMessage(json.dumps(adv).encode("utf-8"))
+            self._advertised.add(topic)
+        pub = {"op": "publish", "topic": topic, "msg": msg}
+        self._ws.sendMessage(json.dumps(pub).encode("utf-8"))
+
+    def send_action_goal(
+        self,
+        skill_type: str,
+        inputs: dict,
+        callback: Callable[[dict], None],
+    ) -> None:
+        """Send a skill execution via rws_server's action goal protocol.
+
+        Matches the lucas dashboard's sendActionGoal() exactly:
+        {op: 'send_action_goal', id, action: '/execute_skill',
+         action_type: 'brain_messages/action/ExecuteSkill',
+         args: {skill_type, inputs: JSON}}
+        """
+        if not self._ws or not self._connected:
+            callback({"success": False, "message": "not connected"})
+            return
+
+        self._action_counter += 1
+        msg_id = f"act{self._action_counter}"
+        self._action_callbacks[msg_id] = callback
+
+        # rws_server expects integer values as floats in the JSON
+        inputs_json = json.dumps(inputs)
+        inputs_json = re.sub(r":(-?\d+)([,}])", r":\g<1>.0\2", inputs_json)
+
+        msg = {
+            "op": "send_action_goal",
+            "id": msg_id,
+            "action": "/execute_skill",
+            "action_type": "brain_messages/action/ExecuteSkill",
+            "args": {
+                "skill_type": skill_type,
+                "inputs": inputs_json,
+            },
+        }
+        self._ws.sendMessage(json.dumps(msg).encode("utf-8"))
+
+    def close(self) -> None:
+        self._connected = False
+        if self._ws:
+            try:
+                self._ws.sendClose()
+            except Exception:
+                pass
+
+
+class ConnectionManager:
+    """Manages one WebSocket connection per robot via raw autobahn/twisted.
+
+    Drop-in replacement for the old roslibpy-based ConnectionManager.
+    Speaks the same protocol as the lucas dashboard's useRosbridge.ts.
     """
 
     def __init__(self, fleet: list[RobotConfig]) -> None:
         self._fleet = {r.name: r for r in fleet}
-        self._clients: dict[str, roslibpy.Ros] = {}
-        self._subscribers: dict[str, list[roslibpy.Topic]] = {}
+        self._robots: dict[str, _RobotWS] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
 
     # ------------------------------------------------------------------
@@ -32,7 +206,6 @@ class ConnectionManager:
     # ------------------------------------------------------------------
 
     async def connect_all(self) -> dict[str, bool]:
-        """Connect to every robot in the fleet.  Returns name → success."""
         self._loop = asyncio.get_running_loop()
         results: dict[str, bool] = {}
         for cfg in self._fleet.values():
@@ -41,31 +214,19 @@ class ConnectionManager:
         return results
 
     async def connect_robot(self, name: str, host: str, port: int) -> bool:
-        """Connect to a single robot.  Runs blocking roslibpy.run() in executor."""
-        client = roslibpy.Ros(host=host, port=port)
-        try:
-            await asyncio.get_running_loop().run_in_executor(
-                None, lambda: client.run(timeout=10)
-            )
-        except Exception as exc:
-            log.warning("Failed to connect to %s (%s:%d): %s", name, host, port, exc)
-            return False
-
-        if not client.is_connected:
-            log.warning("%s: client.is_connected is False after run()", name)
-            return False
-
-        self._clients[name] = client
-        self._subscribers.setdefault(name, [])
-        log.info("Connected to %s at ws://%s:%d", name, host, port)
-        return True
+        loop = asyncio.get_running_loop()
+        rws = _RobotWS(name, host, port, loop)
+        ok = await loop.run_in_executor(None, rws.connect)
+        if ok:
+            self._robots[name] = rws
+        return ok
 
     def is_connected(self, name: str) -> bool:
-        client = self._clients.get(name)
-        return client is not None and client.is_connected
+        rws = self._robots.get(name)
+        return rws is not None and rws.connected
 
     # ------------------------------------------------------------------
-    # Subscribe / publish / service
+    # Subscribe / publish
     # ------------------------------------------------------------------
 
     def subscribe(
@@ -75,24 +236,15 @@ class ConnectionManager:
         msg_type: str,
         callback: Callable[[str, str, dict], None],
     ) -> None:
-        """Subscribe to *topic* on *robot_name*.
-
-        ``callback(robot_name, topic, msg_dict)`` is scheduled on the
-        asyncio event loop — safe to await coroutines from there.
-        """
-        client = self._clients.get(robot_name)
-        if client is None or not client.is_connected:
+        rws = self._robots.get(robot_name)
+        if rws is None or not rws.connected:
             log.warning("subscribe: %s not connected", robot_name)
             return
 
-        listener = roslibpy.Topic(client, topic, msg_type)
+        def _cb(msg: dict) -> None:
+            callback(robot_name, topic, msg)
 
-        def _on_msg(msg: dict) -> None:
-            if self._loop is not None:
-                self._loop.call_soon_threadsafe(callback, robot_name, topic, msg)
-
-        listener.subscribe(_on_msg)
-        self._subscribers[robot_name].append(listener)
+        rws.subscribe(topic, msg_type, _cb)
 
     def publish(
         self,
@@ -101,53 +253,44 @@ class ConnectionManager:
         msg_type: str,
         msg: dict,
     ) -> None:
-        """Publish a single message to *topic* on *robot_name*."""
-        client = self._clients.get(robot_name)
-        if client is None or not client.is_connected:
+        rws = self._robots.get(robot_name)
+        if rws is None or not rws.connected:
             log.warning("publish: %s not connected", robot_name)
             return
-        pub = roslibpy.Topic(client, topic, msg_type)
-        pub.publish(roslibpy.Message(msg))
-        # roslibpy Topics opened just for publish should be unadvertised
-        # after a short delay to let the message go through.
-        pub.unadvertise()
+        rws.publish(topic, msg_type, msg)
 
-    async def call_service(
+    async def run_skill(
         self,
         robot_name: str,
-        service: str,
-        srv_type: str,
-        args: dict | None = None,
+        skill_type: str,
+        inputs: dict | None = None,
     ) -> dict[str, Any]:
-        """Call a ROS2 service on *robot_name*.  Returns the response dict."""
-        client = self._clients.get(robot_name)
-        if client is None or not client.is_connected:
-            return {"success": False, "error": f"{robot_name} not connected"}
+        """Execute a skill on the robot via rws_server's action goal protocol.
 
-        srv = roslibpy.Service(client, service, srv_type)
-        request = roslibpy.ServiceRequest(args or {})
+        This is the primary way to command the robot — matches the lucas
+        dashboard's sendActionGoal().
+        """
+        rws = self._robots.get(robot_name)
+        if rws is None or not rws.connected:
+            return {"success": False, "message": f"{robot_name} not connected"}
 
         future: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
 
-        def _on_response(result: dict) -> None:
-            if self._loop and not future.done():
-                self._loop.call_soon_threadsafe(future.set_result, result)
+        def _on_result(values: dict) -> None:
+            if not future.done():
+                self._loop.call_soon_threadsafe(future.set_result, values)
 
-        def _on_error(exc: Exception) -> None:
-            if self._loop and not future.done():
-                self._loop.call_soon_threadsafe(
-                    future.set_result, {"success": False, "error": str(exc)}
-                )
-
-        srv.call(request, callback=_on_response, errback=_on_error)
+        rws.send_action_goal(skill_type, inputs or {}, _on_result)
 
         try:
-            return await asyncio.wait_for(future, timeout=15.0)
+            result = await asyncio.wait_for(future, timeout=60.0)
+            ok = result.get("success", False) or result.get("success_type") == "success"
+            return {"success": ok, "message": result.get("message", ""), "raw": result}
         except (asyncio.TimeoutError, TimeoutError):
-            return {"success": False, "error": "service call timed out"}
+            return {"success": False, "message": "skill execution timed out"}
 
     # ------------------------------------------------------------------
-    # Navigation helpers (wraps /navigate_to_pose action goal)
+    # Navigation helpers (via skills)
     # ------------------------------------------------------------------
 
     async def send_nav_goal(
@@ -157,33 +300,11 @@ class ConnectionManager:
         y: float,
         theta: float = 0.0,
     ) -> dict[str, Any]:
-        """Publish a Nav2 goal via the /navigate_to_pose action topic.
-
-        roslibpy doesn't have first-class action support, so we use the
-        action goal topic directly.
-        """
-        import math
-
-        goal_msg = {
-            "pose": {
-                "header": {"frame_id": "map"},
-                "pose": {
-                    "position": {"x": x, "y": y, "z": 0.0},
-                    "orientation": {
-                        "x": 0.0,
-                        "y": 0.0,
-                        "z": math.sin(theta / 2),
-                        "w": math.cos(theta / 2),
-                    },
-                },
-            }
-        }
-        # Use the action client service for NavigateToPose
-        return await self.call_service(
+        """Navigate using the innate-os/navigate_to_position skill."""
+        return await self.run_skill(
             robot_name,
-            "/navigate_to_pose/_action/send_goal",
-            "nav2_msgs/NavigateToPose",
-            goal_msg,
+            "innate-os/navigate_to_position",
+            {"x": x, "y": y, "theta": theta},
         )
 
     def send_cmd_vel(
@@ -192,11 +313,10 @@ class ConnectionManager:
         linear_x: float = 0.0,
         angular_z: float = 0.0,
     ) -> None:
-        """Publish a Twist to /cmd_vel on *robot_name*."""
         self.publish(
             robot_name,
             "/cmd_vel",
-            "geometry_msgs/Twist",
+            "geometry_msgs/msg/Twist",
             {
                 "linear": {"x": linear_x, "y": 0.0, "z": 0.0},
                 "angular": {"x": 0.0, "y": 0.0, "z": angular_z},
@@ -204,7 +324,6 @@ class ConnectionManager:
         )
 
     def stop_robot(self, robot_name: str) -> None:
-        """Emergency stop — publish zero velocity."""
         self.send_cmd_vel(robot_name, 0.0, 0.0)
 
     # ------------------------------------------------------------------
@@ -217,39 +336,15 @@ class ConnectionManager:
         skill_name: str,
         parameters: dict | None = None,
     ) -> dict[str, Any]:
-        """Trigger a skill via the /execute_primitive action."""
-        import json
-
-        return await self.call_service(
-            robot_name,
-            "/execute_primitive/_action/send_goal",
-            "brain_messages/ExecutePrimitive",
-            {
-                "primitive_name": skill_name,
-                "input_json": json.dumps(parameters or {}),
-            },
-        )
+        """Execute a named skill on the robot."""
+        return await self.run_skill(robot_name, skill_name, parameters)
 
     # ------------------------------------------------------------------
     # Shutdown
     # ------------------------------------------------------------------
 
     async def shutdown(self) -> None:
-        """Unsubscribe and terminate all connections."""
-        for name, subs in self._subscribers.items():
-            for s in subs:
-                try:
-                    s.unsubscribe()
-                except Exception:
-                    pass
-        self._subscribers.clear()
-
-        for name, client in self._clients.items():
-            try:
-                await asyncio.get_running_loop().run_in_executor(
-                    None, client.terminate
-                )
-            except Exception:
-                log.warning("Error terminating %s", name, exc_info=True)
-        self._clients.clear()
+        for name, rws in self._robots.items():
+            rws.close()
+        self._robots.clear()
         log.info("All connections closed.")
