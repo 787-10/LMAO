@@ -60,6 +60,10 @@ function getOrCreateConnection(url: string): Connection {
     ws.onopen = () => {
       if (conn!.cancelled) { ws.close(); return }
       conn!.connected = true
+      // clear advertised cache so topics get re-advertised on new connection
+      for (const key of advertised) {
+        if (key.startsWith(url + '::')) advertised.delete(key)
+      }
       console.log('[rosbridge] connected to', url, 'subs:', [...conn!.subscriptions.keys()])
       sendAllSubscriptions(conn!)
     }
@@ -89,6 +93,7 @@ function getOrCreateConnection(url: string): Connection {
     ws.onclose = () => {
       if (!conn!.cancelled) {
         conn!.connected = false
+        console.log('[rosbridge] disconnected from', url, '-- reconnecting in 3s')
         conn!.reconnectTimer = setTimeout(connect, 3000)
       }
     }

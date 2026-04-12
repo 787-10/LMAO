@@ -540,23 +540,27 @@ interface ChatMessage {
   timestamp: number
 }
 
+const CHAT_NOISE = /^frame #\d|^inference|^obs age|^\s*$/
+
 function parseChatMsg(raw: string | undefined, fallbackSender: 'user' | 'agent'): ChatMessage | null {
   if (!raw) return null
   try {
     const parsed = JSON.parse(raw)
     if (fallbackSender === 'agent') {
-      // brain state object -- extract to_tell_user, skip if null
       if ('to_tell_user' in parsed) {
         if (!parsed.to_tell_user) return null
         return { text: parsed.to_tell_user, sender: 'agent', timestamp: Date.now() / 1000 }
       }
     }
+    const text = parsed.text ?? raw
+    if (CHAT_NOISE.test(text)) return null
     return {
-      text: parsed.text ?? raw,
+      text,
       sender: parsed.sender ?? fallbackSender,
       timestamp: parsed.timestamp ?? Date.now() / 1000,
     }
   } catch {
+    if (CHAT_NOISE.test(raw)) return null
     return { text: raw, sender: fallbackSender, timestamp: Date.now() / 1000 }
   }
 }
@@ -971,9 +975,9 @@ interface LaserScanMsg {
   ranges: number[]
 }
 
-function LidarPanel({ url }: { url: string }) {
+function LidarPanel({ url, paused }: { url: string; paused: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const { data } = useRosbridgeTopic<LaserScanMsg>(url, '/scan', 'sensor_msgs/msg/LaserScan', 500)
+  const { data } = useRosbridgeTopic<LaserScanMsg>(url, paused ? '' : '/scan', 'sensor_msgs/msg/LaserScan', 500)
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -1228,17 +1232,16 @@ function inGrid(gx: number, gy: number): boolean {
   return gx >= 0 && gx < OCC_SIZE && gy >= 0 && gy < OCC_SIZE
 }
 
-function LidarOccupancy({ url }: { url: string }) {
+function LidarOccupancy({ url, paused }: { url: string; paused: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const gridRef = useRef<Float32Array>(new Float32Array(OCC_SIZE * OCC_SIZE))
   const originRef = useRef<{ x: number; y: number } | null>(null)
   const poseRef = useRef({ x: 0, y: 0, yaw: 0 })
   const frameRef = useRef(0)
-  const [paused, setPaused] = useState(false)
   const pausedRef = useRef(false)
   pausedRef.current = paused
 
-  const { data: scanData } = useRosbridgeTopic<LaserScanMsg>(url, '/scan', 'sensor_msgs/msg/LaserScan', 500)
+  const { data: scanData } = useRosbridgeTopic<LaserScanMsg>(url, paused ? '' : '/scan', 'sensor_msgs/msg/LaserScan', 500)
   const { data: odomData } = useRosbridgeTopic<{
     pose?: { pose?: { position?: { x: number; y: number }; orientation?: { x: number; y: number; z: number; w: number } } }
   }>(url, '/odom', 'nav_msgs/msg/Odometry', 200)
@@ -1356,16 +1359,30 @@ function LidarOccupancy({ url }: { url: string }) {
 
   return (
     <div className="border bg-card w-[310px] shrink-0">
-      <PanelHeader title="LIDAR MAP" right={`${frameRef.current}${paused ? ' paused' : ''}`} />
-      <div className="p-1 relative group">
+      <PanelHeader title="LIDAR MAP" right={`${frameRef.current}`} />
+      <div className="p-1">
         <canvas ref={canvasRef} width={OCC_SIZE} height={OCC_SIZE} className="w-full" style={{ aspectRatio: '1', imageRendering: 'pixelated' }} />
-        <button
-          onClick={() => setPaused((p) => !p)}
-          className="absolute bottom-2 right-2 text-[10px] px-1.5 py-0.5 bg-black/60 text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
-        >
-          {paused ? 'play' : 'pause'}
-        </button>
       </div>
+    </div>
+  )
+}
+
+// -- lidar group with shared pause --
+
+function LidarGroup({ url }: { url: string }) {
+  const [paused, setPaused] = useState(false)
+  return (
+    <div className="flex items-stretch gap-0">
+      <LidarPanel url={url} paused={paused} />
+      <button
+        onClick={() => setPaused((p) => !p)}
+        className={`border-y px-2 text-xs flex items-center ${
+          paused ? 'bg-term-yellow/10 text-term-yellow' : 'bg-card text-muted-foreground hover:text-foreground'
+        }`}
+      >
+        {paused ? '>' : '||'}
+      </button>
+      <LidarOccupancy url={url} paused={paused} />
     </div>
   )
 }
@@ -1435,8 +1452,7 @@ function AgentPage() {
           </div>
         </div>
 
-        {url && <LidarPanel url={url} />}
-        {url && <LidarOccupancy url={url} />}
+        {url && <LidarGroup url={url} />}
       </div>
 
       {/* telemetry grid */}
