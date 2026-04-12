@@ -518,8 +518,6 @@ interface HeadState {
   min_angle: number
 }
 
-// @ts-expect-error moved to telemetry grid
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function HeadPositionPanel({ url }: { url: string }) {
   const { data } = useRosbridgeTopic<{ data?: string }>(url, '/mars/head/current_position', 'std_msgs/msg/String', 500)
   const [dragging, setDragging] = useState(false)
@@ -600,53 +598,6 @@ function HeadPositionPanel({ url }: { url: string }) {
   )
 }
 
-function SkillStatusPanel({ url }: { url: string }) {
-  const { data } = useRosbridgeTopic<{ data?: string }>(url, '/brain/skill_status_update', 'std_msgs/msg/String', 1000)
-  const [skill, setSkill] = useState('')
-
-  function runSkill() {
-    if (!skill.trim()) return
-    publishRosbridge(url, '/brain/chat_in', 'std_msgs/msg/String', {
-      data: JSON.stringify({ text: `run ${skill.trim()}`, sender: 'user', timestamp: Date.now() / 1000 }),
-    })
-    setSkill('')
-  }
-
-  let statusText = data?.data ?? '--'
-  let statusColor = 'text-muted-foreground'
-  try {
-    if (data?.data) {
-      const parsed = JSON.parse(data.data)
-      statusText = parsed.status ?? parsed.skill ?? data.data
-      if (parsed.status === 'running') statusColor = 'text-term-yellow'
-      else if (parsed.status === 'done' || parsed.status === 'success') statusColor = 'text-term-green'
-      else if (parsed.status === 'error' || parsed.status === 'failed') statusColor = 'text-term-red'
-    }
-  } catch { /* use raw */ }
-
-  return (
-    <div className="tui-panel bg-card">
-      <PanelHeader title="SKILLS" />
-      <div className="p-2 text-xs space-y-2">
-        <div className="truncate">
-          <span className={statusColor}>{statusText}</span>
-        </div>
-        <div className="flex gap-1">
-          <input
-            value={skill}
-            onChange={(e) => setSkill(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && runSkill()}
-            placeholder="skill name..."
-            className="flex-1 bg-secondary text-foreground text-xs px-2 py-1 border outline-none focus:border-primary min-w-0"
-          />
-          <button onClick={runSkill} className="text-xs px-2 py-1 bg-primary text-primary-foreground hover:opacity-80 shrink-0">
-            run
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
 
 interface SkillMsg { id: string; skill_type?: string; display_name?: string; name?: string }
 interface AvailableSkillsMsg { skills: SkillMsg[] }
@@ -848,20 +799,6 @@ function SkillUpdatePanel({ url }: { url: string }) {
         >
           ▶ PUBLISH
         </button>
-      </div>
-    </div>
-  )
-}
-
-function TTSPanel({ url }: { url: string }) {
-  const { data } = useRosbridgeTopic<{ data?: boolean }>(url, '/tts/is_playing', undefined, 500)
-  return (
-    <div className="tui-panel bg-card">
-      <PanelHeader title="TTS" />
-      <div className="p-2 text-xs">
-        <span className={data?.data ? 'text-term-green font-bold' : 'text-muted-foreground'}>
-          {data?.data ? 'PLAYING' : 'IDLE'}
-        </span>
       </div>
     </div>
   )
@@ -1324,6 +1261,7 @@ interface LaserScanMsg {
 
 function LidarPanel({ url, paused }: { url: string; paused: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const [viewRange, setViewRange] = useState<number>(2)
   const { data } = useRosbridgeTopic<LaserScanMsg>(url, paused ? '' : '/scan', 'sensor_msgs/msg/LaserScan', 500)
 
   useEffect(() => {
@@ -1341,7 +1279,7 @@ function LidarPanel({ url, paused }: { url: string; paused: boolean }) {
     ctx.fillRect(0, 0, W, H)
 
     // range rings
-    const maxRange = Math.min(data.range_max, 8)
+    const maxRange = Math.min(data.range_max, viewRange)
     const ringCount = 4
     ctx.strokeStyle = '#303030'
     ctx.lineWidth = 0.5
@@ -1417,13 +1355,24 @@ function LidarPanel({ url, paused }: { url: string; paused: boolean }) {
     ctx.fillStyle = '#6c6c6c'
     ctx.font = '8px monospace'
     ctx.fillText(`${ranges.length} pts`, 4, 10)
-  }, [data])
+  }, [data, viewRange])
 
   return (
     <div className="tui-panel bg-card w-[310px] shrink-0">
-      <PanelHeader title="LIDAR" right="/scan" />
+      <PanelHeader title="LIDAR" right={`${viewRange}m /scan`} />
       <div className="p-1">
         <canvas ref={canvasRef} width={298} height={298} className="w-full" style={{ aspectRatio: '1' }} />
+      </div>
+      <div className="border-t px-2 py-1 flex gap-1 text-[10px]">
+        {[2, 4, 8].map((r) => (
+          <button
+            key={r}
+            onClick={() => setViewRange(r)}
+            className={`px-2 py-0.5 ${viewRange === r ? 'bg-primary text-primary-foreground' : 'bg-card text-muted-foreground hover:text-foreground'}`}
+          >
+            {r}m
+          </button>
+        ))}
       </div>
     </div>
   )
@@ -1446,119 +1395,92 @@ function EventRow({ event }: { event: AgentEvent }) {
 
 // -- live location track from odom --
 
-const TRACK_MAX = 500
-const TRACK_MIN_DIST = 0.05 // meters between recorded points
+// View spans ±TRACK_RANGE meters from origin.
+const TRACK_RANGE = 4  // meters per half-side
 
 function LiveLocationTrack({ url }: { url: string }) {
-  const trackRef = useRef<{ x: number; y: number }[]>([])
-  const [track, setTrack] = useState<{ x: number; y: number }[]>([])
   // /amcl_pose = map frame — same coordinate system as navigate_to_position
-  const { data } = useRosbridgeTopic<{
-    pose?: { pose?: { position?: { x: number; y: number } } }
-  }>(url, '/amcl_pose', 'geometry_msgs/msg/PoseWithCovarianceStamped', 200)
+  const { data: amcl } = useRosbridgeTopic<Record<string, unknown>>(url, '/amcl_pose', 'geometry_msgs/msg/PoseWithCovarianceStamped', 200)
+  const trailRef = useRef<{ x: number; y: number }[]>([])
+  const [, setTick] = useState(0)
+
+  const poseData = amcl as { pose?: { pose?: { position?: { x: number; y: number }; orientation?: { x: number; y: number; z: number; w: number } } } } | null
+  const rawPos = poseData?.pose?.pose?.position
+  const rawOri = poseData?.pose?.pose?.orientation
+  const rx = typeof rawPos?.x === 'number' ? rawPos.x : null
+  const ry = typeof rawPos?.y === 'number' ? rawPos.y : null
 
   useEffect(() => {
-    if (!data?.pose?.pose?.position) return
-    const { x, y } = data.pose.pose.position
-    const pts = trackRef.current
-    if (pts.length > 0) {
-      const last = pts[pts.length - 1]
-      const dist = Math.sqrt((x - last.x) ** 2 + (y - last.y) ** 2)
-      if (dist < TRACK_MIN_DIST) return
+    if (rx === null || ry === null) return
+    const trail = trailRef.current
+    const last = trail[trail.length - 1]
+    if (!last || Math.hypot(rx - last.x, ry - last.y) > 0.03) {
+      trail.push({ x: rx, y: ry })
+      if (trail.length > 600) trail.shift()
+      setTick(n => n + 1)
     }
-    pts.push({ x, y })
-    if (pts.length > TRACK_MAX) pts.shift()
-    setTrack([...pts])
-  }, [data])
+  }, [rx, ry])
 
-  if (track.length < 2) {
-    return (
-      <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground">
-        waiting for odom...
-      </div>
+  // SVG 100×100: world (0,0) always maps to (50,50)
+  const scale = 100 / (2 * TRACK_RANGE)
+  const toSvg = (wx: number, wy: number) => ({
+    sx: 50 + wx * scale,
+    sy: 50 - wy * scale,   // flip Y
+  })
+
+  let yaw = 0
+  if (rawOri) {
+    const o = rawOri
+    yaw = Math.atan2(2 * (o.w * o.z + o.x * o.y), 1 - 2 * (o.y ** 2 + o.z ** 2))
+  }
+
+  const trail = trailRef.current
+  const robotSvg = rx !== null ? toSvg(rx, ry!) : null
+
+  // grid lines at integer meters relative to origin
+  const gridLines = []
+  const minG = Math.floor(-TRACK_RANGE)
+  const maxG = Math.ceil(TRACK_RANGE)
+  for (let d = minG; d <= maxG; d++) {
+    const gx = 50 + d * scale
+    const gy = 50 + d * scale
+    const isMajor = d === 0
+    gridLines.push(
+      <line key={`gx${d}`} x1={gx} y1={0} x2={gx} y2={100} stroke={isMajor ? '#444' : '#1e1e1e'} strokeWidth={isMajor ? 0.6 : 0.3} />,
+      <line key={`gy${d}`} x1={0} y1={gy} x2={100} y2={gy} stroke={isMajor ? '#444' : '#1e1e1e'} strokeWidth={isMajor ? 0.6 : 0.3} />,
     )
-  }
-
-  // compute bounds with padding
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
-  for (const p of track) {
-    if (p.x < minX) minX = p.x
-    if (p.x > maxX) maxX = p.x
-    if (p.y < minY) minY = p.y
-    if (p.y > maxY) maxY = p.y
-  }
-  const rangeX = maxX - minX || 1
-  const rangeY = maxY - minY || 1
-  const range = Math.max(rangeX, rangeY) * 1.3
-  const cx = (minX + maxX) / 2
-  const cy = (minY + maxY) / 2
-
-  // map world to SVG [5..95]
-  function toSvg(wx: number, wy: number): { sx: number; sy: number } {
-    return {
-      sx: 50 + ((wx - cx) / range) * 90,
-      sy: 50 - ((wy - cy) / range) * 90, // flip y
+    if (d !== 0) {
+      gridLines.push(
+        <text key={`lx${d}`} x={gx} y={98} fontSize={2.8} fill="#444" textAnchor="middle" fontFamily="monospace">{d}</text>,
+        <text key={`ly${d}`} x={1.5} y={gy + 1} fontSize={2.8} fill="#444" fontFamily="monospace">{-d}</text>,
+      )
     }
   }
-
-  const last = track[track.length - 1]
-  const lastSvg = toSvg(last.x, last.y)
-
-  // grid spacing in meters (snap to nice values)
-  const gridStep = range > 8 ? 2 : range > 3 ? 1 : range > 1 ? 0.5 : 0.2
-  const gridStart = { x: Math.floor(minX / gridStep) * gridStep, y: Math.floor(minY / gridStep) * gridStep }
 
   return (
     <svg viewBox="0 0 100 100" className="w-full h-full" preserveAspectRatio="xMidYMid meet">
-      {/* dynamic grid */}
-      {Array.from({ length: Math.ceil(range / gridStep) + 2 }, (_, i) => {
-        const wx = gridStart.x + i * gridStep
-        const { sx } = toSvg(wx, 0)
-        if (sx < 2 || sx > 98) return null
-        return <line key={`gx-${i}`} x1={sx} y1={0} x2={sx} y2={100} stroke="currentColor" className="text-border" strokeWidth={0.2} />
-      })}
-      {Array.from({ length: Math.ceil(range / gridStep) + 2 }, (_, i) => {
-        const wy = gridStart.y + i * gridStep
-        const { sy } = toSvg(0, wy)
-        if (sy < 2 || sy > 98) return null
-        return <line key={`gy-${i}`} x1={0} y1={sy} x2={100} y2={sy} stroke="currentColor" className="text-border" strokeWidth={0.2} />
-      })}
-
-      {/* origin axes */}
-      {(() => {
-        const o = toSvg(0, 0)
-        return (
-          <>
-            {o.sx > 2 && o.sx < 98 && <line x1={o.sx} y1={0} x2={o.sx} y2={100} stroke="#d75f5f" strokeWidth={0.3} opacity={0.3} />}
-            {o.sy > 2 && o.sy < 98 && <line x1={0} y1={o.sy} x2={100} y2={o.sy} stroke="#5faf5f" strokeWidth={0.3} opacity={0.3} />}
-          </>
-        )
-      })()}
-
+      {gridLines}
       {/* trail */}
-      {track.slice(0, -1).map((p, i) => {
-        const a = toSvg(p.x, p.y)
-        const b = toSvg(track[i + 1].x, track[i + 1].y)
-        const opacity = 0.1 + (i / track.length) * 0.7
-        return <line key={i} x1={a.sx} y1={a.sy} x2={b.sx} y2={b.sy} stroke="#5f87af" strokeWidth={0.8} opacity={opacity} />
+      {trail.length > 1 && trail.slice(0, -1).map((p, i) => {
+        const { sx: x1, sy: y1 } = toSvg(p.x, p.y)
+        const { sx: x2, sy: y2 } = toSvg(trail[i + 1].x, trail[i + 1].y)
+        return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#5f87af" strokeWidth={1} opacity={0.2 + (i / trail.length) * 0.7} />
       })}
-
-      {/* current position */}
-      <circle cx={lastSvg.sx} cy={lastSvg.sy} r={2} fill="#5f87af" />
-
-      {/* start position */}
-      {(() => {
-        const s = toSvg(track[0].x, track[0].y)
-        return <circle cx={s.sx} cy={s.sy} r={1.5} fill="none" stroke="#6c6c6c" strokeWidth={0.5} />
-      })()}
-
-      {/* position label */}
-      <text x={lastSvg.sx} y={lastSvg.sy - 4} fontSize={4} fill="#5f87af" textAnchor="middle" fontFamily="monospace">
-        ({last.x.toFixed(2)}, {last.y.toFixed(2)})
-      </text>
-
-      {/* scale */}
-      <text x={3} y={97} fontSize={3.5} fill="#6c6c6c" fontFamily="monospace">{range.toFixed(1)}m</text>
+      {/* robot dot */}
+      {robotSvg ? <>
+        <circle cx={robotSvg.sx} cy={robotSvg.sy} r={3} fill="#5f87af" />
+        <line
+          x1={robotSvg.sx} y1={robotSvg.sy}
+          x2={robotSvg.sx + Math.cos(yaw) * 6}
+          y2={robotSvg.sy - Math.sin(yaw) * 6}
+          stroke="#7df" strokeWidth={1.5}
+        />
+        <text x={robotSvg.sx} y={robotSvg.sy - 4} fontSize={3.5} fill="#5f87af" textAnchor="middle" fontFamily="monospace">
+          ({rx!.toFixed(2)}, {ry!.toFixed(2)})
+        </text>
+      </> : (
+        <text x={50} y={50} fontSize={5} fill="#444" textAnchor="middle" fontFamily="monospace">no odom</text>
+      )}
     </svg>
   )
 }
@@ -1817,14 +1739,14 @@ function BatteryPanel({ url }: { url: string }) {
 
   const pctColor = pct == null ? 'text-muted-foreground'
     : pct > 60 ? 'text-term-green'
-    : pct > 30 ? 'text-term-yellow'
-    : 'text-term-red'
+      : pct > 30 ? 'text-term-yellow'
+        : 'text-term-red'
 
   const barWidth = pct ?? 0
   const barColor = pct == null ? '#333'
     : pct > 60 ? '#5faf5f'
-    : pct > 30 ? '#afaf5f'
-    : '#af5f5f'
+      : pct > 30 ? '#afaf5f'
+        : '#af5f5f'
 
   return (
     <div className="tui-panel bg-card">
@@ -1853,8 +1775,8 @@ function ImuAccelPanel({ url }: { url: string }) {
   const yacc: number = parsed?.yacc ?? 0
   const zacc: number = parsed?.zacc ?? 0
   const pitch: number = parsed?.pitch ?? 0
-  const roll: number  = parsed?.roll  ?? 0
-  const yaw: number   = parsed?.yaw   ?? 0
+  const roll: number = parsed?.roll ?? 0
+  const yaw: number = parsed?.yaw ?? 0
 
   const MAX_MG = 2000
 
@@ -1921,34 +1843,6 @@ function TTSControlPanel({ url }: { url: string }) {
           className="text-xs px-2 py-1 bg-secondary text-secondary-foreground hover:bg-accent flex-1"
         >
           stop
-        </button>
-      </div>
-    </div>
-  )
-}
-
-function InputConfigPanel({ url }: { url: string }) {
-  const [text, setText] = useState('')
-
-  function send() {
-    if (!text.trim()) return
-    publishRosbridge(url, '/input_manager/active_inputs', 'std_msgs/msg/String', { data: text.trim() })
-    setText('')
-  }
-
-  return (
-    <div className="tui-panel bg-card">
-      <PanelHeader title="INPUT CONFIG" />
-      <div className="p-2 flex gap-1">
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && send()}
-          placeholder="config json..."
-          className="flex-1 bg-secondary text-foreground text-xs px-2 py-1 border outline-none focus:border-primary"
-        />
-        <button onClick={send} className="text-xs px-2 py-1 bg-primary text-primary-foreground hover:bg-accent">
-          send
         </button>
       </div>
     </div>
@@ -2182,8 +2076,8 @@ function LidarVisionCheck({ url }: { url: string }) {
 
   const verdictColor = !result ? '' :
     result.verdict === 'lidar_error' ? 'text-term-red' :
-    result.verdict === 'obstacle_confirmed' ? 'text-term-green' :
-    result.verdict === 'no_anomaly' ? 'text-term-green' : 'text-term-yellow'
+      result.verdict === 'obstacle_confirmed' ? 'text-term-green' :
+        result.verdict === 'no_anomaly' ? 'text-term-green' : 'text-term-yellow'
 
   return (
     <div className="tui-panel bg-card flex flex-col col-span-2">
@@ -2353,8 +2247,8 @@ function AgentPage() {
 
       {/* cameras + info */}
       <div className="flex flex-wrap gap-3">
-        <div className="flex flex-col gap-3 w-[400px] shrink-0">
-          <div className="tui-panel bg-card flex flex-col">
+        <div className="flex gap-0 shrink-0">
+          <div className="tui-panel bg-card flex flex-col w-[400px]">
             <PanelHeader title="MAIN CAMERA" right="/main_camera/left" />
             <div className="aspect-video bg-black overflow-hidden">
               {url ? (
@@ -2364,7 +2258,7 @@ function AgentPage() {
               )}
             </div>
           </div>
-          {url && <DepthCloudPanel url={url} />}
+          {url && <HeadPositionPanel url={url} />}
         </div>
 
         <div className="tui-panel bg-card flex flex-col w-[400px] shrink-0">
@@ -2394,46 +2288,40 @@ function AgentPage() {
       {/* telemetry grid */}
       {url && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-          <RobotPosePanel url={url} />
-          <DrivePanel url={url} />
-          <SysStatsPanel url={url} />
-          <BatteryPanel url={url} />
+          <div className="tui-panel bg-card flex flex-col">
+            <PanelHeader title="ENCODER ODOM" right="map frame /amcl_pose" />
+            <div className="p-1 aspect-square">
+              <LiveLocationTrack url={url} />
+            </div>
+          </div>
           <ImuAccelPanel url={url} />
-          <OdomFdirPanel url={url} />
+          <BatteryPanel url={url} />
+          <SysStatsPanel url={url} />
+          <DrivePanel url={url} />
           <CmdVelPanel url={url} />
-          <SkillStatusPanel url={url} />
-          <TTSPanel url={url} />
-          <TTSControlPanel url={url} />
           <SkillsPanel url={url} />
-        </div>
-      )}
-
-      {/* lidar diagnostics */}
-      {url && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
           <LidarVisionCheck url={url} />
+          <OdomFdirPanel url={url} />
+          <RobotPosePanel url={url} />
         </div>
       )}
 
-      {/* orchestrator controls */}
+      {/* controls */}
       {url && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
           <GotoPanel url={url} />
           <SkillUpdatePanel url={url} />
-          <InputConfigPanel url={url} />
+          <TTSControlPanel url={url} />
         </div>
       )}
 
       {/* chat */}
       {url && <ChatPanel url={url} />}
 
-      {/* location track */}
+      {/* depth cloud */}
       {url && (
-        <div className="tui-panel bg-card flex flex-col" style={{ maxWidth: 300 }}>
-          <PanelHeader title="ENCODER ODOM" right="map frame /amcl_pose" />
-          <div className="p-2 aspect-square max-h-64">
-            <LiveLocationTrack url={url} />
-          </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <DepthCloudPanel url={url} />
         </div>
       )}
 
