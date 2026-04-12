@@ -80,7 +80,7 @@ class FleetHealthMonitor:
             )
         # Also subscribe to ws_messages for comms blackout detection
         self._conn.subscribe(
-            robot_name, "ws_messages", "std_msgs/String", self._on_ws_message
+            robot_name, "ws_messages", "std_msgs/msg/String", self._on_ws_message
         )
 
     def _on_message(self, robot_name: str, topic: str, msg: dict) -> None:
@@ -89,14 +89,14 @@ class FleetHealthMonitor:
 
         # Route to world-model updaters (schedule as coroutines)
         loop = asyncio.get_event_loop()
-        if topic == "/odom":
+        if topic == "/amcl_pose":
+            loop.create_task(self._world.update_amcl_pose(robot_name, msg))
+        elif topic == "/odom":
             loop.create_task(self._world.update_odom(robot_name, msg))
         elif topic == "/battery_state":
             loop.create_task(self._world.update_battery(robot_name, msg))
         elif topic == "/mars/arm/state":
             loop.create_task(self._world.update_arm_state(robot_name, msg))
-        elif topic == "/lmao/heartbeat":
-            loop.create_task(self._world.update_heartbeat(robot_name))
 
     def _on_ws_message(self, robot_name: str, topic: str, msg: dict) -> None:
         """Track last ws_messages timestamp for comms-blackout detection."""

@@ -19,11 +19,11 @@ class TopicDef:
 
 
 MONITORED_TOPICS: dict[str, TopicDef] = {
-    "/odom":           TopicDef("nav_msgs/Odometry",        expected_hz=None),
-    "/battery_state":  TopicDef("sensor_msgs/BatteryState",  expected_hz=0.2),
-    "/scan":           TopicDef("sensor_msgs/LaserScan",     expected_hz=6.0),
-    "/mars/arm/state": TopicDef("sensor_msgs/JointState",    expected_hz=None),
-    "/lmao/heartbeat": TopicDef("std_msgs/String",           expected_hz=1.0),
+    "/odom":           TopicDef("nav_msgs/msg/Odometry",                            expected_hz=None),
+    "/amcl_pose":      TopicDef("geometry_msgs/msg/PoseWithCovarianceStamped",      expected_hz=None),
+    "/battery_state":  TopicDef("sensor_msgs/msg/BatteryState",                     expected_hz=None),
+    "/scan":           TopicDef("sensor_msgs/msg/LaserScan",                        expected_hz=6.0),
+    "/mars/arm/state": TopicDef("sensor_msgs/msg/JointState",                       expected_hz=None),
 }
 
 
