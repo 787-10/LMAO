@@ -1,5 +1,7 @@
 # LMAO — Large Multi-Agent Orchestration
 
+![LMAO System Overview](static/teaser_img.png)
+
 **Distributed autonomous exploration with onboard fault detection, isolation, and recovery.**
 
 Planetary rovers today are slow, rigid, and fragile. A single rover follows a predetermined path, and when something goes wrong — a wheel gets stuck, a sensor fails, communications drop — the mission stalls while Earth-based operators diagnose and intervene. This model does not scale to missions that demand continuous resource acquisition for repair, fuel, or life support in dynamic, uncertain environments.
