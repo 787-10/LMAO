@@ -15,7 +15,7 @@ LMAO replaces the single-rover paradigm with a **hub-and-scout architecture**. A
 The central hub runs an AI mission planner (Claude API) that decomposes high-level objectives into robot tasks, monitors fleet health in real time, and dynamically reassigns work when scouts fail or conditions shift. This is the "O" in LMAO: the orchestration layer that makes multi-agent exploration resilient and scalable.
 
 
-![dashboard](./dashboard.png)
+![dashboard](static/dashboard.png)
 
 ## Why distributed architecture
 
